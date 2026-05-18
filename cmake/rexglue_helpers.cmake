@@ -62,6 +62,12 @@ function(rexglue_configure_target target_name)
     target_compile_definitions(${target_name} PRIVATE
         REXGLUE_BUILD_CONFIG="$<CONFIG>")
 
+    if(TARGET imgui::imgui)
+        target_link_libraries(${target_name} PRIVATE imgui::imgui)
+    endif()
+    target_include_directories(${target_name} PRIVATE
+        ${CMAKE_CURRENT_BINARY_DIR}/rexglue-sdk/include)
+
     if(UNIX AND NOT APPLE)
         set_target_properties(${target_name} PROPERTIES
             INSTALL_RPATH "$ORIGIN"

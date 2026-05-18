@@ -77,6 +77,8 @@ target_include_directories(rexcore PRIVATE
 
 if(UNIX)
     target_link_libraries(rexcore PRIVATE pthread rt dl)
+elseif(WIN32)
+    target_link_libraries(rexcore PUBLIC ws2_32)
 endif()
 
 target_link_libraries(rexcore
@@ -101,4 +103,3 @@ if(REXGLUE_ENABLE_PERF_COUNTERS)
     target_compile_definitions(rexcore PUBLIC
         $<$<NOT:$<CONFIG:Release>>:REXGLUE_ENABLE_PERF_COUNTERS>)
 endif()
-
