@@ -491,32 +491,6 @@ bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
   const uint32_t block_first = page_first >> 6;
   const uint32_t block_last = page_last >> 6;
 
-  uint64_t* valid_flags = active_valid_flags_.load(std::memory_order_acquire);
-  if (valid_flags) {
-    bool all_valid = true;
-    for (uint32_t i = block_first; i <= block_last; ++i) {
-      uint64_t block_valid = valid_flags[i];
-      if (i == block_first) {
-        uint64_t block_before = (uint64_t(1) << (page_first & 63)) - 1;
-        block_valid |= block_before;
-      }
-      if (i == block_last && (page_last & 63) != 63) {
-        uint64_t block_inside = (uint64_t(1) << ((page_last & 63) + 1)) - 1;
-        block_valid |= ~block_inside;
-      }
-      if (block_valid != UINT64_MAX) {
-        all_valid = false;
-        break;
-      }
-    }
-    if (all_valid) {
-      COUNT_profile_set("gpu/shared_memory/request_ranges_count", 1);
-      COUNT_profile_set("gpu/shared_memory/request_ranges_merged_count", 1);
-      COUNT_profile_set("gpu/shared_memory/request_ranges_upload_count", 0);
-      return true;
-    }
-  }
-
   upload_ranges_.clear();
   auto append_upload_range = [this](uint32_t page_start, uint32_t page_count) {
     if (!page_count) {
@@ -533,7 +507,7 @@ bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
   };
   {
     auto global_lock = global_critical_region_.Acquire();
-    valid_flags = active_valid_flags_.load(std::memory_order_relaxed);
+    const uint64_t* valid_flags = system_page_flags_valid_.data();
     uint32_t range_start = UINT32_MAX;
     for (uint32_t i = block_first; i <= block_last; ++i) {
       uint64_t block_valid = valid_flags ? valid_flags[i] : 0;

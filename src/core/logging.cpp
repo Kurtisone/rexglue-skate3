@@ -322,13 +322,6 @@ void ShutdownLogging() {
   g_early_initialized = false;
 }
 
-void FlushLogging() {
-  std::lock_guard lock(g_mutex);
-  for (auto& entry : g_registry)
-    if (entry.logger)
-      entry.logger->flush();
-}
-
 LogCategoryId RegisterLogCategory(const char* name) {
   std::lock_guard lock(g_mutex);
 

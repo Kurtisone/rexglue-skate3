@@ -12,7 +12,6 @@
 
 #include <functional>
 #include <memory>
-#include <functional>
 #include <vector>
 
 #include <rex/input/device_assignment.h>
@@ -41,7 +40,6 @@ class InputSystem : public system::IInputSystem {
   void AttachWindow(rex::ui::Window* window);
   void SetActiveCallback(std::function<bool()> callback);
   void SetMenuChordCallback(std::function<void()> callback);
-  void SetMenuChordCallback(std::function<void()> callback);
 
   /// Replaces any previous assignment. Call before the guest starts polling.
   void SetDeviceAssignment(std::unique_ptr<DeviceAssignment> assignment);
@@ -50,11 +48,6 @@ class InputSystem : public system::IInputSystem {
   X_RESULT GetState(uint32_t user_index, X_INPUT_STATE* out_state);
   // Merged raw pad state for host UI overlays: all connected pads across all
   // drivers and devices, bypassing the is_active suppression and the
-  // menu-chord edge tracking of the guest-facing GetState. Safe to call from
-  // the UI thread. Returns false when no pad is connected.
-  bool GetUiGamepadState(X_INPUT_GAMEPAD* out_gamepad);
-  // Merged raw pad state for host UI overlays: all connected pads across all
-  // drivers and user slots, bypassing the is_active suppression and the
   // menu-chord edge tracking of the guest-facing GetState. Safe to call from
   // the UI thread. Returns false when no pad is connected.
   bool GetUiGamepadState(X_INPUT_GAMEPAD* out_gamepad);

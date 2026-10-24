@@ -695,7 +695,9 @@ TEST_CASE("cvar SaveConfig", "[cvar]") {
     }
 
     CHECK(content.find("test_int32_flag = 777") != std::string::npos);
-    CHECK(content.find("test_string_flag = \"saved_value\"") != std::string::npos);
+    // The atomic writer serializes through toml++, which emits literal strings.
+    CHECK((content.find("test_string_flag = \"saved_value\"") != std::string::npos ||
+           content.find("test_string_flag = 'saved_value'") != std::string::npos));
 
     std::filesystem::remove(save_path);
   }

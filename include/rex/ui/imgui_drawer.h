@@ -65,8 +65,6 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
 
   // Whether Draw would render anything, so a caller that has to marshal to the
   // UI thread can skip the round trip entirely.
-  bool HasDialogs() const { return !dialogs_.empty(); }
-
   // SetPresenter may be called from the destructor.
   void SetPresenter(Presenter* new_presenter);
   void SetImmediateDrawer(ImmediateDrawer* new_immediate_drawer);
@@ -153,10 +151,6 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
   // window mouse capture bookkeeping (io.MouseDown can't be used - input is
   // queued via the ImGui event API and only reflected at NewFrame).
   uint32_t mouse_buttons_down_ = 0;
-
-  // Whether the platform window has been asked to activate text input
-  // (character event delivery / IME) because a text widget is active.
-  bool text_input_active_ = false;
 
   // If there's an active pointer, the ImGui mouse is controlled by this touch.
   // If it's TouchEvent::kPointerIDNone, the ImGui mouse is controlled by the

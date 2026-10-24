@@ -42,13 +42,14 @@ REXCVAR_DEFINE_BOOL(protect_on_release, false, "Memory",
 
 REXCVAR_DEFINE_BOOL(scribble_heap, false, "Memory", "Scribble 0xCD into all allocated heap memory");
 
+namespace rex::memory {
+
 thread_local PhysicalMemoryInvalidationDiagnostics physical_memory_invalidation_diagnostics_;
 
 const PhysicalMemoryInvalidationDiagnostics& GetPhysicalMemoryInvalidationDiagnostics() {
   return physical_memory_invalidation_diagnostics_;
 }
 
-namespace rex::memory {
 
 uint32_t get_page_count(uint32_t value, uint32_t page_size, uint32_t page_size_shift) {
   return rex::round_up(value, page_size) >> page_size_shift;

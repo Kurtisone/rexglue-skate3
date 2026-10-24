@@ -37,27 +37,6 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
                                                        const bool try_enable_validation) {
   std::unique_ptr<VulkanInstance> vulkan_instance(new VulkanInstance());
 
-#if REX_PLATFORM_MAC
-  // The Vulkan loader does not discover executable-local MoltenVK manifests by
-  // default. Prefer user-provided loader settings, but make release folders run
-  // without requiring VK_ICD_FILENAMES in the shell.
-  if (!std::getenv("VK_ICD_FILENAMES") && !std::getenv("VK_DRIVER_FILES")) {
-    const auto executable_folder = rex::filesystem::GetExecutableFolder();
-    const std::filesystem::path local_icd_paths[] = {
-        executable_folder / "MoltenVK_icd.json",
-        executable_folder / "share" / "vulkan" / "icd.d" / "MoltenVK_icd.json",
-    };
-    for (const auto& local_icd_path : local_icd_paths) {
-      if (std::filesystem::is_regular_file(local_icd_path)) {
-        std::string local_icd_path_string = local_icd_path.string();
-        setenv("VK_ICD_FILENAMES", local_icd_path_string.c_str(), 0);
-        setenv("VK_DRIVER_FILES", local_icd_path_string.c_str(), 0);
-        break;
-      }
-    }
-  }
-#endif
-
   // Load the RenderDoc API if connected.
 
   vulkan_instance->renderdoc_api_ = RenderDocAPI::CreateIfConnected();
