@@ -135,6 +135,8 @@ void gapFillCodeRegions(CodegenContext& ctx) {
   size_t gapsFound = 0;
   size_t segmentsCreated = 0;
 
+  graph.beginDeferredAddNotifications();
+
   for (const auto& region : scan.codeRegions) {
     // Split region on terminators (blr, tail calls), then check each segment
     auto segments = splitRegionOnTerminators(region, binary, knownCallables);
@@ -163,6 +165,8 @@ void gapFillCodeRegions(CodegenContext& ctx) {
 
     gapsFound++;
   }
+
+  graph.flushDeferredAddNotifications();
 
   if (segmentsCreated > 0) {
     REXCODEGEN_TRACE("Analyze: registered {} gap functions from {} regions", segmentsCreated,
