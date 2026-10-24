@@ -208,28 +208,6 @@ void D3D12CommandProcessor::InitializeShaderStorage(const std::filesystem::path&
   pipeline_cache_->InitializeShaderStorage(cache_root, title_id, blocking);
 }
 
-void D3D12CommandProcessor::RequestFrameTrace(const std::filesystem::path& root_path) {
-  // Capture with PIX if attached.
-  if (GetD3D12Provider().GetGraphicsAnalysis() != nullptr) {
-    pix_capture_requested_.store(true, std::memory_order_relaxed);
-    return;
-  }
-  CommandProcessor::RequestFrameTrace(root_path);
-}
-
-void D3D12CommandProcessor::TracePlaybackWroteMemory(uint32_t base_ptr, uint32_t length) {
-  shared_memory_->MemoryInvalidationCallback(base_ptr, length, true);
-  primitive_processor_->MemoryInvalidationCallback(base_ptr, length, true);
-}
-
-void D3D12CommandProcessor::RestoreEdramSnapshot(const void* snapshot) {
-  // Starting a new frame because descriptors may be needed.
-  if (!BeginSubmission(true)) {
-    return;
-  }
-  render_target_cache_->RestoreEdramSnapshot(snapshot);
-}
-
 bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* reader,
                                                                uint32_t packet, uint32_t count) {
   auto write_fake_result = [this, reader, count](int32_t fake_sample_count) -> bool {
@@ -302,9 +280,9 @@ bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffe
       return true;
     }
     bool is_end_via_z_pass =
-        sample_counts->ZPass_A == kQueryFinished && sample_counts->ZPass_B == kQueryFinished;
+        sample_counts->ZPass_A == kQueryFinished || sample_counts->ZPass_B == kQueryFinished;
     bool is_end_via_z_fail =
-        sample_counts->ZFail_A == kQueryFinished && sample_counts->ZFail_B == kQueryFinished;
+        sample_counts->ZFail_A == kQueryFinished || sample_counts->ZFail_B == kQueryFinished;
     std::memset(sample_counts, 0, sizeof(xenos::xe_gpu_depth_sample_counts));
     if (is_end_via_z_pass || is_end_via_z_fail) {
       sample_counts->ZPass_A = fake_sample_count;
@@ -314,9 +292,9 @@ bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffe
   };
 
   bool is_end_via_z_pass =
-      sample_counts->ZPass_A == kQueryFinished && sample_counts->ZPass_B == kQueryFinished;
+      sample_counts->ZPass_A == kQueryFinished || sample_counts->ZPass_B == kQueryFinished;
   bool is_end_via_z_fail =
-      sample_counts->ZFail_A == kQueryFinished && sample_counts->ZFail_B == kQueryFinished;
+      sample_counts->ZFail_A == kQueryFinished || sample_counts->ZFail_B == kQueryFinished;
   bool is_end = is_end_via_z_pass || is_end_via_z_fail;
 
   if (!is_end) {
@@ -1097,7 +1075,7 @@ bool D3D12CommandProcessor::SetupContext() {
       REXCVAR_GET(d3d12_readback_resolve), REXCVAR_GET(anisotropic_override),
       REXCVAR_GET(gpu_allow_invalid_fetch_constants));
 
-  shared_memory_ = std::make_unique<D3D12SharedMemory>(*this, *memory_, trace_writer_);
+  shared_memory_ = std::make_unique<D3D12SharedMemory>(*this, *memory_);
   if (!shared_memory_->Initialize()) {
     REXGPU_ERROR("Failed to initialize shared memory");
     return false;
@@ -1106,8 +1084,8 @@ bool D3D12CommandProcessor::SetupContext() {
   // Initialize the render target cache before configuring binding - need to
   // know if using rasterizer-ordered views for the bindless root signature.
   render_target_cache_ = std::make_unique<D3D12RenderTargetCache>(
-      *register_file_, *memory_, trace_writer_, draw_resolution_scale_x, draw_resolution_scale_y,
-      *this, bindless_resources_used_);
+      *register_file_, *memory_, draw_resolution_scale_x, draw_resolution_scale_y, *this,
+      bindless_resources_used_);
   if (!render_target_cache_->Initialize()) {
     REXGPU_ERROR("Failed to initialize the render target cache");
     return false;
@@ -1351,8 +1329,8 @@ bool D3D12CommandProcessor::SetupContext() {
     }
   }
 
-  primitive_processor_ = std::make_unique<D3D12PrimitiveProcessor>(
-      *register_file_, *memory_, trace_writer_, *shared_memory_, *this);
+  primitive_processor_ =
+      std::make_unique<D3D12PrimitiveProcessor>(*register_file_, *memory_, *shared_memory_, *this);
   if (!primitive_processor_->Initialize()) {
     REXGPU_ERROR("Failed to initialize the geometric primitive processor");
     return false;
@@ -1790,8 +1768,6 @@ bool D3D12CommandProcessor::SetupContext() {
                                             uint32_t(SystemBindlessView::kGammaRampPWLSRV)));
   }
 
-  pix_capture_requested_.store(false, std::memory_order_relaxed);
-  pix_capturing_ = false;
   occlusion_query_resources_available_ = InitializeOcclusionQueryResources();
   gpu_timestamp_resources_available_ = InitializeGpuTimestampResources();
 
@@ -3317,26 +3293,6 @@ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_s
   return true;
 }
 
-void D3D12CommandProcessor::InitializeTrace() {
-  CommandProcessor::InitializeTrace();
-
-  if (!BeginSubmission(false)) {
-    return;
-  }
-  bool render_target_cache_submitted = render_target_cache_->InitializeTraceSubmitDownloads();
-  bool shared_memory_submitted = shared_memory_->InitializeTraceSubmitDownloads();
-  if (!render_target_cache_submitted && !shared_memory_submitted) {
-    return;
-  }
-  AwaitAllQueueOperationsCompletion();
-  if (render_target_cache_submitted) {
-    render_target_cache_->InitializeTraceCompleteDownloads();
-  }
-  if (shared_memory_submitted) {
-    shared_memory_->InitializeTraceCompleteDownloads();
-  }
-}
-
 bool D3D12CommandProcessor::IssueCopy() {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
@@ -3951,14 +3907,6 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
     EvictOldReadbackBuffers(readback_buffers_);
     EvictOldReadbackBuffers(memexport_readback_buffers_);
 
-    pix_capturing_ = pix_capture_requested_.exchange(false, std::memory_order_relaxed);
-    if (pix_capturing_) {
-      IDXGraphicsAnalysis* graphics_analysis = GetD3D12Provider().GetGraphicsAnalysis();
-      if (graphics_analysis != nullptr) {
-        graphics_analysis->BeginCapture();
-      }
-    }
-
     primitive_processor_->BeginFrame();
 
     texture_cache_->BeginFrame();
@@ -4076,14 +4024,6 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
   if (is_closing_frame) {
     if (REXCVAR_GET(clear_memory_page_state) && shared_memory_) {
       shared_memory_->SetSystemPageBlocksValidWithGpuDataWritten();
-    }
-    // Close the capture after submitting.
-    if (pix_capturing_) {
-      IDXGraphicsAnalysis* graphics_analysis = provider.GetGraphicsAnalysis();
-      if (graphics_analysis != nullptr) {
-        graphics_analysis->EndCapture();
-      }
-      pix_capturing_ = false;
     }
     frame_open_ = false;
     // Submission already closed now, so minus 1.
