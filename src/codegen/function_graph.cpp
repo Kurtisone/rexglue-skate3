@@ -777,7 +777,11 @@ FunctionNode* FunctionGraph::addFunction(uint32_t base, uint32_t size, FunctionA
   functionHasXrefs_[base] = hasXrefs;
 
   // Notify all PENDING functions
-  notifyFunctionAdded(nodePtr);
+  if (deferAddNotifications_) {
+    deferredAddedBases_.push_back(base);
+  } else {
+    notifyFunctionAdded(nodePtr);
+  }
 
   return nodePtr;
 }
@@ -1375,23 +1379,71 @@ TargetKind FunctionGraph::classifyTarget(uint32_t target, uint32_t callerAddr,
 void FunctionGraph::notifyFunctionAdded(FunctionNode* newFunction) {
   for (auto& [base, node] : functions_) {
     if (node.get() != newFunction && node->isPending()) {
-      auto jumps = node->unresolvedJumps();
-      for (const auto& jump : jumps) {
-        if (jump.target != newFunction->base()) {
-          continue;
-        }
+      resolvePendingAgainst(node.get(), newFunction);
+    }
+  }
+}
 
-        if (!jump.isCall && chunkParent(jump.target) != 0 &&
-            HasEmittedBlockContaining(node.get(), jump.target)) {
-          node->addLabel(jump.target);
-          node->removeUnresolvedJump(jump.site);
-          REXCODEGEN_TRACE(
-              "FunctionGraph: resolved 0x{:08X}->0x{:08X} as emitted chunk label in 0x{:08X}",
-              jump.site, jump.target, node->base());
-        }
+void FunctionGraph::resolvePendingAgainst(FunctionNode* node, FunctionNode* newFunction) {
+  if (!node->hasUnresolvedJumps()) {
+    return;
+  }
+  const uint32_t new_base = newFunction->base();
+  const auto& pending_jumps = node->unresolvedJumps();
+  if (std::none_of(pending_jumps.begin(), pending_jumps.end(),
+                   [new_base](const auto& jump) { return jump.target == new_base; })) {
+    return;
+  }
+  auto jumps = pending_jumps;
+  for (const auto& jump : jumps) {
+    if (jump.target != new_base) {
+      continue;
+    }
+
+    if (!jump.isCall && chunkParent(jump.target) != 0 &&
+        HasEmittedBlockContaining(node, jump.target)) {
+      node->addLabel(jump.target);
+      node->removeUnresolvedJump(jump.site);
+      REXCODEGEN_TRACE(
+          "FunctionGraph: resolved 0x{:08X}->0x{:08X} as emitted chunk label in 0x{:08X}",
+          jump.site, jump.target, node->base());
+    }
+  }
+
+  node->tryResolveAgainst(newFunction);
+}
+
+void FunctionGraph::beginDeferredAddNotifications() {
+  deferAddNotifications_ = true;
+  deferredAddedBases_.clear();
+}
+
+void FunctionGraph::flushDeferredAddNotifications() {
+  deferAddNotifications_ = false;
+  if (deferredAddedBases_.empty()) {
+    return;
+  }
+  std::unordered_set<uint32_t> added(deferredAddedBases_.begin(), deferredAddedBases_.end());
+  deferredAddedBases_.clear();
+
+  std::vector<uint32_t> targets;
+  for (auto& [base, node] : functions_) {
+    if (!node->isPending() || !node->hasUnresolvedJumps()) {
+      continue;
+    }
+    // Targets in jump order, each once, as the per-add path would see them.
+    targets.clear();
+    for (const auto& jump : node->unresolvedJumps()) {
+      if (jump.target != base && added.contains(jump.target) &&
+          std::find(targets.begin(), targets.end(), jump.target) == targets.end()) {
+        targets.push_back(jump.target);
       }
-
-      node->tryResolveAgainst(newFunction);
+    }
+    for (uint32_t target : targets) {
+      auto it = functions_.find(target);
+      if (it != functions_.end()) {
+        resolvePendingAgainst(node.get(), it->second.get());
+      }
     }
   }
 }
