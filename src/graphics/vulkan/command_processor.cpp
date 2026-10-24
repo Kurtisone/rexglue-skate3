@@ -5221,7 +5221,8 @@ bool VulkanCommandProcessor::IssueCopy() {
   // resolves within its length bound must take the readback path regardless
   // of gameplay/scaling state.
   const bool force_readback_window =
-      REXCVAR_GET(native_render_force_resolve_readback_max_length) > 0;
+      REXCVAR_GET(native_render_force_resolve_readback_max_length) > 0 ||
+      REXCVAR_GET(readback_resolve_force_length) > 0;
   if (readback_mode == ReadbackResolveMode::kDisabled && !force_readback_window &&
       (!texture_cache_->IsDrawResolutionScaled() || gameplay_state_active)) {
     uint32_t written_address = 0;
@@ -5605,25 +5606,31 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
         REXCVAR_GET(native_render_force_resolve_readback_max_length);
     force_window_cpu_copy = force_readback_max_length > 0 &&
                             written_length <= uint32_t(force_readback_max_length);
-    if (!force_scaled_resolve_cpu_copy && !force_window_cpu_copy) {
+    // Always-on exact-length readback (Skate 1 photo target), quiet.
+    const int32_t force_length = REXCVAR_GET(readback_resolve_force_length);
+    const bool force_length_cpu_copy =
+        force_length > 0 && written_length == uint32_t(force_length);
+    if (!force_scaled_resolve_cpu_copy && !force_window_cpu_copy && !force_length_cpu_copy) {
       log_readback_decision("disabled-after-resolve", readback_mode);
       return true;
     }
     readback_mode = ReadbackResolveMode::kFull;
     force_scaled_resolve_sync_only = true;
-    log_readback_decision(
-        force_scaled_resolve_cpu_copy ? "targeted-scaled-resolve-full" : "forced-window-full",
-        readback_mode, false, true,
-        force_scaled_resolve_cpu_copy ? kImportSkaterPreviewResolveLength
-                                      : uint32_t(force_readback_max_length));
-    // Unconditional (the debug counters are boot-zeroed by the app): the
-    // app-armed shutter-burst window is ~1.5 s and the photo display card
-    // composes from exactly these CPU copies; visibility here is the whole
-    // diagnosis when the card is wrong (mirrors the D3D12 readback-window
-    // log).
-    REXLOG_INFO("readback-window: resolve dest=0x{:08X} len=0x{:X} -> CPU copy (kFull{})",
-                written_address, written_length,
-                force_scaled_resolve_cpu_copy ? ", targeted" : ", forced window");
+    if (force_scaled_resolve_cpu_copy || force_window_cpu_copy) {
+      log_readback_decision(
+          force_scaled_resolve_cpu_copy ? "targeted-scaled-resolve-full" : "forced-window-full",
+          readback_mode, false, true,
+          force_scaled_resolve_cpu_copy ? kImportSkaterPreviewResolveLength
+                                        : uint32_t(force_readback_max_length));
+      // Unconditional (the debug counters are boot-zeroed by the app): the
+      // app-armed shutter-burst window is ~1.5 s and the photo display card
+      // composes from exactly these CPU copies; visibility here is the whole
+      // diagnosis when the card is wrong (mirrors the D3D12 readback-window
+      // log).
+      REXLOG_INFO("readback-window: resolve dest=0x{:08X} len=0x{:X} -> CPU copy (kFull{})",
+                  written_address, written_length,
+                  force_scaled_resolve_cpu_copy ? ", targeted" : ", forced window");
+    }
   }
 
   const int32_t max_readback_length = REXCVAR_GET(vulkan_readback_resolve_max_length);

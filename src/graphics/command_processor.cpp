@@ -101,6 +101,17 @@ REXCVAR_DEFINE_INT32(native_render_force_resolve_readback_min_length, 0, "GPU",
     .range(0, 16 * 1024 * 1024)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_INT32(readback_resolve_force_length, 0, "GPU",
+                     "When > 0, render-to-texture resolves of exactly this unscaled byte "
+                     "length are always read back synchronously into CPU-visible guest "
+                     "memory, even when readback_resolve is disabled. For games that "
+                     "CPU-read one specific render target (Skate 1 photos JPEG-encode the "
+                     "640x360 32bpp target: 983040). Each copy is a synchronous GPU drain, "
+                     "so pick a length no framebuffer-sized resolve shares. 0 disables "
+                     "(default).")
+    .range(0, 16 * 1024 * 1024)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(readback_memexport, false, "GPU",
                     "Enable CPU readback of shader memexport writes for guest memory "
                     "coherency (can reduce correctness issues, but may add GPU/CPU sync cost)")

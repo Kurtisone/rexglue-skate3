@@ -3307,7 +3307,8 @@ bool D3D12CommandProcessor::IssueCopy() {
   // resolves within its length bound must take the readback path regardless
   // of gameplay/scaling state.
   const bool force_readback_window =
-      REXCVAR_GET(native_render_force_resolve_readback_max_length) > 0;
+      REXCVAR_GET(native_render_force_resolve_readback_max_length) > 0 ||
+      REXCVAR_GET(readback_resolve_force_length) > 0;
   if (readback_mode == ReadbackResolveMode::kDisabled && !force_readback_window &&
       (!texture_cache_->IsDrawResolutionScaled() || gameplay_state_active)) {
     uint32_t written_address, written_length;
@@ -3405,7 +3406,11 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
                                           : " (above window cap - GPU only)");
       }
     }
-    if (!force_scaled_resolve_cpu_copy && !force_window_cpu_copy) {
+    // Always-on exact-length readback (Skate 1 photo target), quiet.
+    const int32_t force_length = REXCVAR_GET(readback_resolve_force_length);
+    const bool force_length_cpu_copy =
+        force_length > 0 && written_length == uint32_t(force_length);
+    if (!force_scaled_resolve_cpu_copy && !force_window_cpu_copy && !force_length_cpu_copy) {
       return true;
     }
     readback_mode = ReadbackResolveMode::kFull;
