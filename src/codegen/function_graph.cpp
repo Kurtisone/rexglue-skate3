@@ -1375,7 +1375,19 @@ TargetKind FunctionGraph::classifyTarget(uint32_t target, uint32_t callerAddr,
 void FunctionGraph::notifyFunctionAdded(FunctionNode* newFunction) {
   for (auto& [base, node] : functions_) {
     if (node.get() != newFunction && node->isPending()) {
-      auto jumps = node->unresolvedJumps();
+      if (!node->hasUnresolvedJumps()) {
+        continue;
+      }
+      // This runs for every pending function on every added function (GapFill
+      // adds tens of thousands), so copy the jump list only when one of its
+      // jumps targets the new function.
+      const uint32_t new_base = newFunction->base();
+      const auto& pending_jumps = node->unresolvedJumps();
+      if (std::none_of(pending_jumps.begin(), pending_jumps.end(),
+                       [new_base](const auto& jump) { return jump.target == new_base; })) {
+        continue;
+      }
+      auto jumps = pending_jumps;
       for (const auto& jump : jumps) {
         if (jump.target != newFunction->base()) {
           continue;
