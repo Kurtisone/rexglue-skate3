@@ -132,7 +132,8 @@ void discoverFunction(CodegenContext& ctx, uint32_t funcAddr,
       }
     }
   }
-  auto result = discoverBlocks(decoded, funcAddr, *region, effectiveKnownFunctions, pdataSize);
+  auto result = discoverBlocks(decoded, funcAddr, *region, effectiveKnownFunctions, pdataSize,
+                               &ctx.Config().switchTables);
 
   if (result.blocks.empty()) {
     REXCODEGEN_WARN("Analyze: no blocks found for function 0x{:08X}", funcAddr);
