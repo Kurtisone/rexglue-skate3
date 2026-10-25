@@ -31,6 +31,9 @@ DeferredCommandBuffer::DeferredCommandBuffer(const VulkanCommandProcessor& comma
 
 void DeferredCommandBuffer::Reset() {
   command_stream_.clear();
+  pre_render_pass_stream_.clear();
+  splice_stream_.clear();
+  write_stream_ = &command_stream_;
 }
 
 void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
@@ -470,12 +473,13 @@ void DeferredCommandBuffer::CmdVkBeginRendering(const VkRenderingInfo* rendering
 void* DeferredCommandBuffer::WriteCommand(Command command, size_t arguments_size_bytes) {
   size_t arguments_size_elements =
       (arguments_size_bytes + sizeof(uintmax_t) - 1) / sizeof(uintmax_t);
-  size_t offset = command_stream_.size();
-  command_stream_.resize(offset + kCommandHeaderSizeElements + arguments_size_elements);
-  CommandHeader& header = *reinterpret_cast<CommandHeader*>(command_stream_.data() + offset);
+  std::vector<uintmax_t>& stream = *write_stream_;
+  size_t offset = stream.size();
+  stream.resize(offset + kCommandHeaderSizeElements + arguments_size_elements);
+  CommandHeader& header = *reinterpret_cast<CommandHeader*>(stream.data() + offset);
   header.command = command;
   header.arguments_size_elements = uint32_t(arguments_size_elements);
-  return command_stream_.data() + (offset + kCommandHeaderSizeElements);
+  return stream.data() + (offset + kCommandHeaderSizeElements);
 }
 
 }  // namespace rex::graphics::vulkan

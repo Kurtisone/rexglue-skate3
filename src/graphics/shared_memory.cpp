@@ -464,11 +464,9 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
   COUNT_profile_set("gpu/shared_memory/request_ranges_upload_count",
                     uint32_t(upload_ranges_.size()));
 
-  if (upload_ranges_.empty()) {
-    return true;
-  }
-
-  return UploadRanges(upload_ranges_);
+  bool uploaded = upload_ranges_.empty() || UploadRanges(upload_ranges_);
+  OnRangesRequested(merged_ranges.data(), merged_ranges.size());
+  return uploaded;
 }
 
 bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
@@ -552,11 +550,10 @@ bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
   COUNT_profile_set("gpu/shared_memory/request_ranges_upload_count",
                     uint32_t(upload_ranges_.size()));
 
-  if (upload_ranges_.empty()) {
-    return true;
-  }
-
-  return UploadRanges(upload_ranges_);
+  bool uploaded = upload_ranges_.empty() || UploadRanges(upload_ranges_);
+  const std::pair<uint32_t, uint32_t> range(start, length);
+  OnRangesRequested(&range, 1);
+  return uploaded;
 }
 
 std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallbackThunk(

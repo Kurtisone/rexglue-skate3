@@ -54,8 +54,16 @@ class VulkanSharedMemory : public SharedMemory {
                                         uint32_t length_allocations) override;
 
   bool UploadRanges(const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) override;
+  void OnRangesRequested(const std::pair<uint32_t, uint32_t>* ranges, size_t count) override;
 
  private:
+  // Pages requested since the current render pass began: an upload may be
+  // moved before the render pass only if none of its pages was, so that no
+  // draw already recorded in the pass sees the new data.
+  void SyncPassRequestedPages();
+  bool IsAnyPassRequestedPage(uint32_t page_first, uint32_t page_count) const;
+  bool UploadRangesBeforeRenderPass(
+      const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges);
   void GetUsageMasks(Usage usage, VkPipelineStageFlags& stage_mask,
                      VkAccessFlags& access_mask) const;
 
@@ -72,6 +80,10 @@ class VulkanSharedMemory : public SharedMemory {
 
   std::unique_ptr<ui::vulkan::VulkanUploadBufferPool> upload_buffer_pool_;
   std::vector<VkBufferCopy> upload_regions_;
+
+  std::vector<uint64_t> pass_requested_pages_;
+  std::vector<uint32_t> pass_requested_blocks_touched_;
+  uint64_t pass_requested_pages_serial_ = UINT64_MAX;
 };
 
 }  // namespace rex::graphics::vulkan

@@ -209,6 +209,21 @@ class VulkanCommandProcessor : public CommandProcessor {
   // scope. Submission must be open.
   void EndRenderPass();
 
+  // Recording into the stream spliced in before the current render pass, so
+  // shared memory uploads that no draw of the pass has read yet don't end it.
+  // Only valid while InRenderPass(); the shared memory buffer barriers around
+  // the spliced copies are added when the render pass ends.
+  bool InRenderPass() const { return in_render_pass_; }
+  uint64_t render_pass_serial() const { return render_pass_serial_; }
+  DeferredCommandBuffer& BeginRecordingBeforeRenderPass(VkBuffer shared_memory_buffer,
+                                                       VkPipelineStageFlags access_stages) {
+    pre_render_pass_shared_memory_buffer_ = shared_memory_buffer;
+    pre_render_pass_shared_memory_stages_ = access_stages;
+    deferred_command_buffer_.BeginPreRenderPass();
+    return deferred_command_buffer_;
+  }
+  void EndRecordingBeforeRenderPass() { deferred_command_buffer_.EndPreRenderPass(); }
+
   VkDescriptorSetLayout GetSingleTransientDescriptorLayout(
       SingleTransientDescriptorLayout transient_descriptor_layout) const {
     return descriptor_set_layouts_single_transient_[size_t(transient_descriptor_layout)];
@@ -917,6 +932,14 @@ class VulkanCommandProcessor : public CommandProcessor {
   VkRenderPass current_render_pass_;
   const VulkanRenderTargetCache::Framebuffer* current_framebuffer_;
   bool in_render_pass_ = false;
+  // Where the current render pass begins in the deferred command buffer, and
+  // a counter of render passes entered.
+  size_t render_pass_begin_position_ = 0;
+  uint64_t render_pass_serial_ = 0;
+  VkBuffer pre_render_pass_shared_memory_buffer_ = VK_NULL_HANDLE;
+  // Stages that may access the shared memory buffer around the moved copies.
+  VkPipelineStageFlags pre_render_pass_shared_memory_stages_ = 0;
+  void SplicePreRenderPassCommands();
 
   // Currently bound graphics pipeline, either from the pipeline cache (with
   // potentially deferred creation - current_external_graphics_pipeline_ is

@@ -10,6 +10,7 @@
  */
 
 #include <algorithm>
+#include <unordered_map>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -147,6 +148,8 @@ REXCVAR_DEFINE_BOOL(vulkan_reuse_unchanged_draw_bindings, false, "GPU/Vulkan",
                     "binding views")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(vulkan_log_render_pass_breaks, false, "GPU/Vulkan",
+                    "Every 2 s, log which code ends render passes (caller addresses)");
 REXCVAR_DEFINE_BOOL(vulkan_gpu_timestamp_buckets, false, "GPU/Vulkan",
                     "Measure per-bucket GPU times (guest draws, resolves, render target dumps) "
                     "with timestamp queries and report them in the FPS overlay")
@@ -3500,14 +3503,63 @@ bool VulkanCommandProcessor::PushImageMemoryBarrier(
   return true;
 }
 
+#if !REX_PLATFORM_WIN32
+#include <dlfcn.h>
+#endif
+
+namespace {
+// vulkan_log_render_pass_breaks: which code ends render passes, as caller
+// return addresses relative to their library (symbolize offline). Render pass
+// breaks are expensive on tiled mobile GPUs.
+std::mutex g_pass_break_mutex;
+std::unordered_map<uintptr_t, uint64_t> g_pass_break_callers;
+std::chrono::steady_clock::time_point g_pass_break_last_log;
+
+void RecordRenderPassBreak(void* caller) {
+  std::lock_guard<std::mutex> lock(g_pass_break_mutex);
+  ++g_pass_break_callers[reinterpret_cast<uintptr_t>(caller)];
+  auto now = std::chrono::steady_clock::now();
+  if (now - g_pass_break_last_log < std::chrono::seconds(2)) {
+    return;
+  }
+  g_pass_break_last_log = now;
+  std::vector<std::pair<uintptr_t, uint64_t>> sorted(g_pass_break_callers.begin(),
+                                                     g_pass_break_callers.end());
+  std::sort(sorted.begin(), sorted.end(),
+            [](const auto& a, const auto& b) { return a.second > b.second; });
+  std::string line;
+  for (size_t i = 0; i < sorted.size() && i < 12; ++i) {
+    const char* lib = "?";
+    uintptr_t offset = sorted[i].first;
+#if !REX_PLATFORM_WIN32
+    Dl_info info;
+    if (dladdr(reinterpret_cast<void*>(sorted[i].first), &info) && info.dli_fname) {
+      const char* slash = strrchr(info.dli_fname, '/');
+      lib = slash ? slash + 1 : info.dli_fname;
+      offset -= reinterpret_cast<uintptr_t>(info.dli_fbase);
+    }
+#endif
+    line += fmt::format(" {}+{:#x}={}", lib, offset, sorted[i].second);
+  }
+  REXGPU_INFO("Render pass breaks in 2 s by caller:{}", line);
+  g_pass_break_callers.clear();
+}
+}  // namespace
+
 bool VulkanCommandProcessor::SubmitBarriers(bool force_end_render_pass) {
   assert_true(submission_open_);
   SplitPendingBarrier();
   if (pending_barriers_.empty()) {
     if (force_end_render_pass) {
+      if (in_render_pass_ && REXCVAR_GET(vulkan_log_render_pass_breaks)) {
+        RecordRenderPassBreak(__builtin_return_address(0));
+      }
       EndRenderPass();
     }
     return false;
+  }
+  if (in_render_pass_ && REXCVAR_GET(vulkan_log_render_pass_breaks)) {
+    RecordRenderPassBreak(__builtin_return_address(0));
   }
   EndRenderPass();
   for (auto it = pending_barriers_.cbegin(); it != pending_barriers_.cend(); ++it) {
@@ -3605,6 +3657,7 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
     rendering_info.pColorAttachments = color_attachment_count ? color_attachments : nullptr;
     rendering_info.pDepthAttachment = has_depth ? &depth_attachment : nullptr;
     rendering_info.pStencilAttachment = has_stencil ? &stencil_attachment : nullptr;
+    render_pass_begin_position_ = deferred_command_buffer_.Position();
     deferred_command_buffer_.CmdVkBeginRendering(&rendering_info);
   } else {
     VkRenderPassBeginInfo render_pass_begin_info;
@@ -3619,10 +3672,12 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
     render_pass_begin_info.renderArea.extent = framebuffer->host_extent;
     render_pass_begin_info.clearValueCount = 0;
     render_pass_begin_info.pClearValues = nullptr;
+    render_pass_begin_position_ = deferred_command_buffer_.Position();
     deferred_command_buffer_.CmdVkBeginRenderPass(&render_pass_begin_info,
                                                   VK_SUBPASS_CONTENTS_INLINE);
   }
   in_render_pass_ = true;
+  ++render_pass_serial_;
 
   // Replay resolve clears deferred to the next render pass binding their
   // render targets - they ride the render pass entered for guest draws anyway
@@ -3704,6 +3759,7 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
     rendering_info.pColorAttachments = transfer_dest_is_depth ? nullptr : &color_attachment;
     rendering_info.pDepthAttachment = transfer_dest_is_depth ? &depth_attachment : nullptr;
     rendering_info.pStencilAttachment = transfer_dest_is_depth ? &stencil_attachment : nullptr;
+    render_pass_begin_position_ = deferred_command_buffer_.Position();
     deferred_command_buffer_.CmdVkBeginRendering(&rendering_info);
   } else {
     VkRenderPassBeginInfo render_pass_begin_info;
@@ -3716,16 +3772,25 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
     render_pass_begin_info.renderArea.extent = framebuffer->host_extent;
     render_pass_begin_info.clearValueCount = 0;
     render_pass_begin_info.pClearValues = nullptr;
+    render_pass_begin_position_ = deferred_command_buffer_.Position();
     deferred_command_buffer_.CmdVkBeginRenderPass(&render_pass_begin_info,
                                                   VK_SUBPASS_CONTENTS_INLINE);
   }
   in_render_pass_ = true;
+  ++render_pass_serial_;
 }
+
 
 void VulkanCommandProcessor::EndRenderPass() {
   assert_true(submission_open_);
   if (!in_render_pass_) {
     return;
+  }
+  if (REXCVAR_GET(vulkan_log_render_pass_breaks)) {
+    RecordRenderPassBreak(__builtin_return_address(0));
+  }
+  if (deferred_command_buffer_.HasPreRenderPass()) {
+    SplicePreRenderPassCommands();
   }
   if (current_render_pass_ == VK_NULL_HANDLE) {
     deferred_command_buffer_.CmdVkEndRendering();
@@ -3735,6 +3800,35 @@ void VulkanCommandProcessor::EndRenderPass() {
   current_render_pass_ = VK_NULL_HANDLE;
   current_framebuffer_ = nullptr;
   in_render_pass_ = false;
+}
+
+void VulkanCommandProcessor::SplicePreRenderPassCommands() {
+  // The copies into the shared memory buffer must come after everything that
+  // accessed it before the render pass, and the draws of the render pass must
+  // see their results.
+  VkBufferMemoryBarrier barrier;
+  barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+  barrier.pNext = nullptr;
+  barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.buffer = pre_render_pass_shared_memory_buffer_;
+  barrier.offset = 0;
+  barrier.size = VK_WHOLE_SIZE;
+  deferred_command_buffer_.BeginSplice();
+  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  deferred_command_buffer_.CmdVkPipelineBarrier(pre_render_pass_shared_memory_stages_,
+                                                VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 1,
+                                                &barrier, 0, nullptr);
+  deferred_command_buffer_.AppendPreRenderPass();
+  barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT |
+                          VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_READ_BIT |
+                          VK_ACCESS_TRANSFER_READ_BIT;
+  deferred_command_buffer_.CmdVkPipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                                pre_render_pass_shared_memory_stages_, 0, 0,
+                                                nullptr, 1, &barrier, 0, nullptr);
+  deferred_command_buffer_.EndSplice(render_pass_begin_position_);
 }
 
 VkDescriptorSet VulkanCommandProcessor::AllocateSingleTransientDescriptor(

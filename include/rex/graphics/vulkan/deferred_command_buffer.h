@@ -31,6 +31,28 @@ class DeferredCommandBuffer {
   void Reset();
   void Execute(VkCommandBuffer command_buffer);
 
+  // Commands recorded between BeginPreRenderPass and EndPreRenderPass go to a
+  // side stream instead of the end, to be spliced in before the current render
+  // pass began (SpliceBefore) without ending it, which is costly on tiled GPUs.
+  size_t Position() const { return command_stream_.size(); }
+  void BeginPreRenderPass() { write_stream_ = &pre_render_pass_stream_; }
+  void EndPreRenderPass() { write_stream_ = &command_stream_; }
+  bool HasPreRenderPass() const { return !pre_render_pass_stream_.empty(); }
+  // Commands recorded between BeginSplice and EndSplice, around
+  // AppendPreRenderPass, are inserted at position in the main stream.
+  void BeginSplice() { write_stream_ = &splice_stream_; }
+  void AppendPreRenderPass() {
+    splice_stream_.insert(splice_stream_.end(), pre_render_pass_stream_.begin(),
+                          pre_render_pass_stream_.end());
+    pre_render_pass_stream_.clear();
+  }
+  void EndSplice(size_t position) {
+    write_stream_ = &command_stream_;
+    command_stream_.insert(command_stream_.begin() + position, splice_stream_.begin(),
+                           splice_stream_.end());
+    splice_stream_.clear();
+  }
+
   // render_pass_begin->pNext of all barriers must be null.
   void CmdVkBeginRenderPass(const VkRenderPassBeginInfo* render_pass_begin,
                             VkSubpassContents contents) {
@@ -694,6 +716,9 @@ class DeferredCommandBuffer {
 
   // uintmax_t to ensure uint64_t and pointer alignment of all structures.
   std::vector<uintmax_t> command_stream_;
+  std::vector<uintmax_t> pre_render_pass_stream_;
+  std::vector<uintmax_t> splice_stream_;
+  std::vector<uintmax_t>* write_stream_ = &command_stream_;
 };
 
 }  // namespace rex::graphics::vulkan

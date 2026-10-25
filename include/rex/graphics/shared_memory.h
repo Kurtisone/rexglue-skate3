@@ -144,6 +144,13 @@ class SharedMemory {
   virtual bool UploadRanges(
       const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) = 0;
 
+  // After RequestRange(s), with the byte ranges the GPU is about to access
+  // (uploaded first if they were invalid).
+  virtual void OnRangesRequested(const std::pair<uint32_t, uint32_t>* ranges, size_t count) {
+    (void)ranges;
+    (void)count;
+  }
+
  private:
   memory::Memory& memory_;
 

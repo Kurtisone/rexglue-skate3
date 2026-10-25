@@ -27,6 +27,11 @@ REXCVAR_DEFINE_BOOL(vulkan_sparse_shared_memory, true, "GPU/Vulkan",
                     "Use sparse shared memory on Vulkan")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(vulkan_hoist_shared_memory_uploads, false, "GPU/Vulkan",
+                    "Copy guest memory uploads before the current render pass instead of "
+                    "ending it, when no draw of the pass used those pages (render pass breaks "
+                    "are costly on tiled mobile GPUs)");
+
 namespace rex::graphics::vulkan {
 
 VulkanSharedMemory::VulkanSharedMemory(VulkanCommandProcessor& command_processor,
@@ -268,10 +273,141 @@ bool VulkanSharedMemory::AllocateSparseHostGpuMemoryRange(uint32_t offset_alloca
   return true;
 }
 
+void VulkanSharedMemory::SyncPassRequestedPages() {
+  uint64_t serial = command_processor_.render_pass_serial();
+  if (pass_requested_pages_serial_ == serial) {
+    return;
+  }
+  pass_requested_pages_serial_ = serial;
+  if (pass_requested_pages_.empty()) {
+    pass_requested_pages_.resize(((kBufferSize >> page_size_log2()) + 63) >> 6);
+  }
+  for (uint32_t block : pass_requested_blocks_touched_) {
+    pass_requested_pages_[block] = 0;
+  }
+  pass_requested_blocks_touched_.clear();
+}
+
+bool VulkanSharedMemory::IsAnyPassRequestedPage(uint32_t page_first, uint32_t page_count) const {
+  if (pass_requested_pages_.empty()) {
+    return false;
+  }
+  for (uint32_t page = page_first; page < page_first + page_count;) {
+    uint32_t block = page >> 6;
+    uint64_t bits = pass_requested_pages_[block];
+    if (!bits) {
+      page = (block + 1) << 6;
+      continue;
+    }
+    if (bits & (uint64_t(1) << (page & 63))) {
+      return true;
+    }
+    ++page;
+  }
+  return false;
+}
+
+void VulkanSharedMemory::OnRangesRequested(const std::pair<uint32_t, uint32_t>* ranges,
+                                           size_t count) {
+  if (!REXCVAR_GET(vulkan_hoist_shared_memory_uploads) || !command_processor_.InRenderPass()) {
+    return;
+  }
+  SyncPassRequestedPages();
+  for (size_t i = 0; i < count; ++i) {
+    if (!ranges[i].second) {
+      continue;
+    }
+    uint32_t page_first = ranges[i].first >> page_size_log2();
+    uint32_t page_last = (ranges[i].first + ranges[i].second - 1) >> page_size_log2();
+    for (uint32_t page = page_first; page <= page_last; ++page) {
+      uint64_t& bits = pass_requested_pages_[page >> 6];
+      if (!bits) {
+        pass_requested_blocks_touched_.push_back(page >> 6);
+      }
+      bits |= uint64_t(1) << (page & 63);
+    }
+  }
+}
+
+bool VulkanSharedMemory::UploadRangesBeforeRenderPass(
+    const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) {
+  uint64_t submission_current = command_processor_.GetCurrentSubmission();
+  // The stages that read the buffer (vertex input, guest shaders, compute,
+  // transfer), plus those of the compute and transfer writes (resolves).
+  VkPipelineStageFlags access_stages;
+  VkAccessFlags read_access;
+  GetUsageMasks(Usage::kRead, access_stages, read_access);
+  DeferredCommandBuffer& command_buffer =
+      command_processor_.BeginRecordingBeforeRenderPass(buffer_, access_stages);
+  bool successful = true;
+  upload_regions_.clear();
+  VkBuffer upload_buffer_previous = VK_NULL_HANDLE;
+  for (auto upload_range : upload_page_ranges) {
+    uint32_t upload_range_start = upload_range.first;
+    uint32_t upload_range_length = upload_range.second;
+    while (upload_range_length) {
+      VkBuffer upload_buffer;
+      VkDeviceSize upload_buffer_offset, upload_buffer_size;
+      uint8_t* upload_buffer_mapping = upload_buffer_pool_->RequestPartial(
+          submission_current, upload_range_length << page_size_log2(),
+          size_t(1) << page_size_log2(), upload_buffer, upload_buffer_offset, upload_buffer_size);
+      if (upload_buffer_mapping == nullptr) {
+        REXGPU_ERROR("Shared memory: Failed to get a Vulkan upload buffer");
+        successful = false;
+        break;
+      }
+      MakeRangeValid(upload_range_start << page_size_log2(), uint32_t(upload_buffer_size), false);
+      std::memcpy(upload_buffer_mapping,
+                  memory().TranslatePhysical(upload_range_start << page_size_log2()),
+                  upload_buffer_size);
+      if (upload_buffer_previous != upload_buffer && !upload_regions_.empty()) {
+        command_buffer.CmdVkCopyBuffer(upload_buffer_previous, buffer_,
+                                       uint32_t(upload_regions_.size()), upload_regions_.data());
+        upload_regions_.clear();
+      }
+      upload_buffer_previous = upload_buffer;
+      VkBufferCopy& upload_region = upload_regions_.emplace_back();
+      upload_region.srcOffset = upload_buffer_offset;
+      upload_region.dstOffset = VkDeviceSize(upload_range_start << page_size_log2());
+      upload_region.size = upload_buffer_size;
+      uint32_t upload_buffer_pages = uint32_t(upload_buffer_size >> page_size_log2());
+      upload_range_start += upload_buffer_pages;
+      upload_range_length -= upload_buffer_pages;
+    }
+    if (!successful) {
+      break;
+    }
+  }
+  if (!upload_regions_.empty()) {
+    command_buffer.CmdVkCopyBuffer(upload_buffer_previous, buffer_,
+                                   uint32_t(upload_regions_.size()), upload_regions_.data());
+    upload_regions_.clear();
+  }
+  command_processor_.EndRecordingBeforeRenderPass();
+  return successful;
+}
+
 bool VulkanSharedMemory::UploadRanges(
     const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) {
   if (upload_page_ranges.empty()) {
     return true;
+  }
+  // Inside a render pass, copy before it instead of ending it when no draw of
+  // the pass has requested these pages and nothing in the pass writes the
+  // shared memory (the barriers around the moved copies assume reads only).
+  if (REXCVAR_GET(vulkan_hoist_shared_memory_uploads) && command_processor_.InRenderPass() &&
+      last_usage_ == Usage::kRead && !last_written_range_.second) {
+    SyncPassRequestedPages();
+    bool any_requested = false;
+    for (const auto& range : upload_page_ranges) {
+      if (IsAnyPassRequestedPage(range.first, range.second)) {
+        any_requested = true;
+        break;
+      }
+    }
+    if (!any_requested) {
+      return UploadRangesBeforeRenderPass(upload_page_ranges);
+    }
   }
   // Attribute the GPU time of the upload copies (and the barriers around
   // them) to the shared memory upload profiling bucket.
