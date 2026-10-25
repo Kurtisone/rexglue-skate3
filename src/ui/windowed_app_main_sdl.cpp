@@ -37,7 +37,16 @@
 #include <SDL3/SDL_hints.h>
 
 #if REX_PLATFORM_ANDROID
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <unistd.h>
+#include <unwind.h>
+
+#include <cinttypes>
+#include <cstdio>
+#include <cstring>
+#include <string>
 
 #include <SDL3/SDL_system.h>
 
@@ -208,6 +217,97 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
 
 #elif REX_PLATFORM_ANDROID
 
+namespace {
+
+// Fatal signal report for devices without adb: crash.txt in the app folder
+// lists the faulting address and each frame as library + offset, to
+// symbolize against the unstripped libraries of the build. Then the previous
+// handler (Android's debuggerd) still writes its tombstone.
+int crash_fd = -1;
+struct sigaction previous_crash_actions[NSIG];
+
+void CrashWrite(const char* text) {
+  if (crash_fd >= 0) {
+    write(crash_fd, text, strlen(text));
+  }
+}
+
+void CrashWriteHex(const char* label, uintptr_t value) {
+  char buffer[64];
+  snprintf(buffer, sizeof(buffer), "%s0x%016" PRIxPTR "\n", label, value);
+  CrashWrite(buffer);
+}
+
+void CrashWriteFrame(int index, uintptr_t pc) {
+  char buffer[512];
+  Dl_info info;
+  if (dladdr(reinterpret_cast<void*>(pc), &info) && info.dli_fname) {
+    const char* name = strrchr(info.dli_fname, '/');
+    snprintf(buffer, sizeof(buffer), "#%02d pc 0x%016" PRIxPTR "  %s +0x%" PRIxPTR "  (%s)\n", index,
+             pc, name ? name + 1 : info.dli_fname, pc - uintptr_t(info.dli_fbase),
+             info.dli_sname ? info.dli_sname : "?");
+  } else {
+    snprintf(buffer, sizeof(buffer), "#%02d pc 0x%016" PRIxPTR "\n", index, pc);
+  }
+  CrashWrite(buffer);
+}
+
+struct BacktraceState {
+  int count;
+};
+
+_Unwind_Reason_Code CrashUnwindFrame(_Unwind_Context* context, void* arg) {
+  auto* state = static_cast<BacktraceState*>(arg);
+  uintptr_t pc = _Unwind_GetIP(context);
+  if (pc) {
+    CrashWriteFrame(state->count, pc);
+  }
+  return ++state->count < 64 ? _URC_NO_REASON : _URC_END_OF_STACK;
+}
+
+void CrashHandler(int signal_number, siginfo_t* info, void* context) {
+  char buffer[128];
+  snprintf(buffer, sizeof(buffer), "\nFatal signal %d (code %d) in thread %d\n", signal_number,
+           info ? info->si_code : 0, int(gettid()));
+  CrashWrite(buffer);
+  if (info) {
+    CrashWriteHex("fault address ", uintptr_t(info->si_addr));
+  }
+#if defined(__aarch64__)
+  if (context) {
+    const auto& mcontext = static_cast<ucontext_t*>(context)->uc_mcontext;
+    CrashWriteHex("pc ", uintptr_t(mcontext.pc));
+    CrashWriteFrame(-1, uintptr_t(mcontext.pc));
+    CrashWriteHex("lr ", uintptr_t(mcontext.regs[30]));
+    CrashWriteFrame(-2, uintptr_t(mcontext.regs[30]));
+    CrashWriteHex("sp ", uintptr_t(mcontext.sp));
+  }
+#endif
+  CrashWrite("backtrace (from the handler):\n");
+  BacktraceState state{0};
+  _Unwind_Backtrace(CrashUnwindFrame, &state);
+  if (crash_fd >= 0) {
+    fsync(crash_fd);
+  }
+  // Hand over to the previous handler (debuggerd), then die as before.
+  sigaction(signal_number, &previous_crash_actions[signal_number], nullptr);
+  raise(signal_number);
+}
+
+void InstallCrashReporter(const char* folder) {
+  std::string path = std::string(folder) + "/crash.txt";
+  crash_fd = open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+  struct sigaction action = {};
+  action.sa_sigaction = CrashHandler;
+  action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+  sigemptyset(&action.sa_mask);
+  for (int signal_number : {SIGSEGV, SIGBUS, SIGILL, SIGABRT, SIGFPE, SIGTRAP}) {
+    sigaction(signal_number, &action, &previous_crash_actions[signal_number]);
+  }
+}
+
+}  // namespace
+
 // SDLActivity loads libmain.so and calls SDL_main on its own thread.
 extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char* argv[]) {
   // Game data, config, logs and user data all live in the app's external
@@ -216,6 +316,7 @@ extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char* a
     setenv("REX_APP_ROOT", external, 1);
     setenv("HOME", external, 1);
     chdir(external);
+    InstallCrashReporter(external);
   }
   rex::InitializeAndroid();
   int result = RunWindowedApp(argc, argv);
