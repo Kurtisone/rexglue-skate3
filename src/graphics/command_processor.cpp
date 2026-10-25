@@ -143,6 +143,9 @@ REXCVAR_DEFINE_BOOL(gpu_cpu_profile, false, "GPU",
 REXCVAR_DEFINE_BOOL(gpu_force_msaa_1x, false, "GPU",
                     "Render every multisampled EDRAM surface single-sampled (no MSAA): much "
                     "cheaper on tiled mobile GPUs, jagged edges; apply at launch");
+REXCVAR_DEFINE_INT32(gpu_force_msaa_1x_min_pitch, 1280, "GPU",
+                     "gpu_force_msaa_1x only applies to surfaces at least this many pixels wide")
+    .range(0, 16383);
 
 namespace rex::graphics {
 
@@ -423,7 +426,11 @@ void CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
   // gpu_force_msaa_1x: drop the sample count of every EDRAM surface, so render
   // targets, draws and resolves all see single-sampled surfaces (a smaller
   // surface still fits at the base the title chose for the multisampled one).
-  if (index == reg::RB_SURFACE_INFO::register_index && REXCVAR_GET(gpu_force_msaa_1x)) {
+  // Only for surfaces at least gpu_force_msaa_1x_min_pitch pixels wide: titles
+  // also use narrow multisampled surfaces as a resolution trick (Skate's title
+  // screen draws into a 640-wide 4x one), which single-sampled lose 3/4 of.
+  if (index == reg::RB_SURFACE_INFO::register_index && REXCVAR_GET(gpu_force_msaa_1x) &&
+      (value & 0x3FFF) >= uint32_t(REXCVAR_GET(gpu_force_msaa_1x_min_pitch))) {
     value &= ~(uint32_t(3) << 16);
   }
 
