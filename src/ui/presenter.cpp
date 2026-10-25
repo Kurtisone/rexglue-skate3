@@ -42,6 +42,9 @@ REXCVAR_DEFINE_INT32(presenter_strict_guest_output_backpressure_timeout_ms, 100,
     .range(0, 1000)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_INT32(presenter_present_cadence_swaps, 600, "UI/Presenter",
+                     "Swaps per presenter_present_cadence_log line")
+    .range(10, 100000);
 REXCVAR_DEFINE_BOOL(presenter_present_cadence_log, false, "UI/Presenter",
                     "Log guest present cadence statistics every 600 swaps: average/max "
                     "swap-to-swap interval, standard deviation, and frame-to-frame jitter "
@@ -610,13 +613,13 @@ bool Presenter::RefreshGuestOutput(
           s_cad_jitter_sum += std::abs(ms - s_cad_last);
         }
         s_cad_last = ms;
-        if (++s_cad_n >= 600) {
+        if (++s_cad_n >= uint32_t(REXCVAR_GET(presenter_present_cadence_swaps))) {
           const double avg = s_cad_sum / s_cad_n;
           const double var = std::max(0.0, s_cad_sumsq / s_cad_n - avg * avg);
           REXLOG_INFO(
               "present-cadence: avg={:.2f}ms sd={:.2f} jitter={:.3f} max={:.2f} "
-              "(600 swaps)",
-              avg, std::sqrt(var), s_cad_jitter_sum / (s_cad_n - 1), s_cad_max);
+              "({} swaps)",
+              avg, std::sqrt(var), s_cad_jitter_sum / (s_cad_n - 1), s_cad_max, s_cad_n);
           s_cad_sum = s_cad_sumsq = s_cad_max = s_cad_jitter_sum = s_cad_last = 0;
           s_cad_n = 0;
         }

@@ -2036,6 +2036,9 @@ uint32_t VulkanRenderTargetCache::GetMaxRenderTargetHeight() const {
 }
 
 RenderTargetCache::RenderTarget* VulkanRenderTargetCache::CreateRenderTarget(RenderTargetKey key) {
+  REXGPU_INFO("VulkanRenderTargetCache: creating render target {} ({}x{}, {}x MSAA)",
+              key.GetDebugName(), key.GetWidth(), key.GetPitchTiles(),
+              1u << uint32_t(key.msaa_samples));
   const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
   const VkDevice device = vulkan_device->device();
