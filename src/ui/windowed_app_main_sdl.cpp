@@ -36,6 +36,14 @@
 
 #include <SDL3/SDL_hints.h>
 
+#if REX_PLATFORM_ANDROID
+#include <unistd.h>
+
+#include <SDL3/SDL_system.h>
+
+#include <rex/main_android.h>
+#endif
+
 #if REX_PLATFORM_WIN32
 REXCVAR_DEFINE_BOOL(win32_high_resolution_timer, true, "Win32",
                     "Requests high-resolution timer from the NT kernel");
@@ -196,6 +204,23 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
     argv_ptrs.push_back(s.data());
   }
   return RunWindowedApp(static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
+}
+
+#elif REX_PLATFORM_ANDROID
+
+// SDLActivity loads libmain.so and calls SDL_main on its own thread.
+extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char* argv[]) {
+  // Game data, config, logs and user data all live in the app's external
+  // files folder: /storage/emulated/0/Android/data/<package>/files.
+  if (const char* external = SDL_GetAndroidExternalStoragePath()) {
+    setenv("REX_APP_ROOT", external, 1);
+    setenv("HOME", external, 1);
+    chdir(external);
+  }
+  rex::InitializeAndroid();
+  int result = RunWindowedApp(argc, argv);
+  rex::FlushLogging();
+  std::_Exit(result);
 }
 
 #else

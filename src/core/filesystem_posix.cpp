@@ -112,6 +112,14 @@ std::filesystem::path GetExecutableFolder() {
 }
 
 std::filesystem::path GetAppRootFolder() {
+#if REX_PLATFORM_ANDROID
+  // The "executable" is the zygote's app_process; the Android entry point
+  // sets this to the app's external files folder, where the user copies the
+  // game and the config.
+  if (auto root = rex::platform::env::get("REX_APP_ROOT")) {
+    return std::filesystem::path(*root);
+  }
+#endif
   auto folder = GetExecutableFolder();
 #if REX_PLATFORM_MAC
   // <root>/<name>.app/Contents/MacOS/<exe> -> <root>
@@ -125,6 +133,20 @@ std::filesystem::path GetAppRootFolder() {
 #endif
   return folder;
 }
+
+#if REX_PLATFORM_ANDROID
+bool IsAndroidContentUri(const std::string_view source) {
+  return source.substr(0, 10) == "content://";
+}
+
+int OpenAndroidContentFileDescriptor(const std::string_view uri, const char* mode) {
+  // Opening content:// URIs needs a ContentResolver call through JNI; the
+  // game is read from a plain folder instead, so this is not wired up.
+  (void)uri;
+  (void)mode;
+  return -1;
+}
+#endif  // REX_PLATFORM_ANDROID
 
 std::filesystem::path GetUserFolder() {
   // get preferred data home

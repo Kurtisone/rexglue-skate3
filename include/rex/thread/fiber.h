@@ -14,7 +14,12 @@
 #include <rex/platform.h>
 #include <cstddef>
 
-#if REX_PLATFORM_LINUX || REX_PLATFORM_MAC
+#if REX_PLATFORM_ANDROID
+// Bionic has no ucontext switching: fibers switch stacks with a small
+// assembly routine instead (fiber_posix.cpp).
+#include <cstdint>
+#include <vector>
+#elif REX_PLATFORM_LINUX || REX_PLATFORM_MAC
 #if REX_PLATFORM_MAC && !defined(_XOPEN_SOURCE)
 // Darwin hides the deprecated ucontext APIs unless _XOPEN_SOURCE is defined
 // before including <ucontext.h>.
@@ -57,7 +62,12 @@ struct Fiber {
   void* handle_ = nullptr;
   bool is_thread_fiber_ = false;
 #elif REX_PLATFORM_LINUX || REX_PLATFORM_MAC
+#if REX_PLATFORM_ANDROID
+  // Saved stack pointer; the callee-saved registers are on that stack.
+  void* stack_pointer_ = nullptr;
+#else
   ucontext_t context_{};
+#endif
   std::vector<uint8_t> stack_;
   void (*entry_)(void*) = nullptr;
   void* arg_ = nullptr;

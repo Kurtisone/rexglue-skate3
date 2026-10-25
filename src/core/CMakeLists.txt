@@ -68,6 +68,7 @@ elseif(UNIX)
         mapped_memory_posix.cpp
         math_gcc.cpp
         memory_posix.cpp
+        main_android.cpp
         platform/console_posix.cpp
         platform/env_posix.cpp
         seh_posix.cpp
@@ -99,7 +100,10 @@ target_include_directories(rexcore PRIVATE
     ${PROJECT_SOURCE_DIR}/thirdparty/cli11/include
 )
 
-if(UNIX)
+if(ANDROID)
+    # Bionic's libc has the pthread and rt functions.
+    target_link_libraries(rexcore PRIVATE dl android log)
+elseif(UNIX)
     target_link_libraries(rexcore PRIVATE pthread dl)
     if(NOT APPLE)
         target_link_libraries(rexcore PRIVATE rt)
