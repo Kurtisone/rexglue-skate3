@@ -775,7 +775,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
 #else
     cpu_set_t cpu_set;
 #if REX_PLATFORM_ANDROID
-    if (sched_getaffinity(pthread_gettid_np(thread_), sizeof(cpu_set_t), &cpu_set) != 0) {
+    if (sched_getaffinity(kernel_tid_.load(std::memory_order_acquire), sizeof(cpu_set_t), &cpu_set) != 0) {
       assert_always();
     }
 #else
@@ -808,7 +808,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
       }
     }
 #if REX_PLATFORM_ANDROID
-    if (sched_setaffinity(pthread_gettid_np(thread_), sizeof(cpu_set_t), &cpu_set) != 0) {
+    if (sched_setaffinity(kernel_tid_.load(std::memory_order_acquire), sizeof(cpu_set_t), &cpu_set) != 0) {
       assert_always();
     }
 #else
@@ -876,8 +876,24 @@ class PosixCondition<Thread> : public PosixConditionBase {
     sigval value{};
     value.sival_ptr = this;
 #if REX_PLATFORM_ANDROID
-    int result = sigqueue(pthread_gettid_np(thread_),
-                          GetSystemSignal(SignalType::kThreadUserCallback), value);
+    // sigqueue takes a process id; target this thread of our process, and
+    // skip threads that have exited (title termination signals every thread).
+    pid_t tid;
+    {
+      std::unique_lock<std::mutex> state_lock(state_mutex_);
+      if (state_ == State::kFinished) {
+        return;
+      }
+      tid = kernel_tid_.load(std::memory_order_acquire);
+    }
+    siginfo_t info = {};
+    info.si_signo = GetSystemSignal(SignalType::kThreadUserCallback);
+    info.si_code = SI_QUEUE;
+    info.si_pid = getpid();
+    info.si_uid = getuid();
+    info.si_value = value;
+    int result = tid ? int(syscall(SYS_rt_tgsigqueueinfo, getpid(), tid, info.si_signo, &info))
+                     : -1;
 #else
     int result = pthread_sigqueue(thread_, GetSystemSignal(SignalType::kThreadUserCallback), value);
 #endif
@@ -1030,6 +1046,11 @@ class PosixCondition<Thread> : public PosixConditionBase {
   bool signaled_;
   int exit_code_;
   State state_;             // Protected by state_mutex_
+#if REX_PLATFORM_ANDROID
+  // Kernel thread id, set when the thread starts: bionic aborts the process
+  // when pthread_gettid_np gets the pthread_t of a thread that has exited.
+  std::atomic<pid_t> kernel_tid_{0};
+#endif
   uint32_t suspend_count_;  // Protected by state_mutex_
 #if defined(__APPLE__)
   sem_t* suspend_sem_ = SEM_FAILED;
@@ -1417,6 +1438,9 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
 
   current_thread_ = thread;
   current_thread_condition_ = &thread->handle_;
+#if REX_PLATFORM_ANDROID
+  thread->handle_.kernel_tid_.store(gettid(), std::memory_order_release);
+#endif
   {
     std::unique_lock<std::mutex> lock(thread->handle_.state_mutex_);
     thread->handle_.state_ = create_suspended ? State::kSuspended : State::kRunning;
