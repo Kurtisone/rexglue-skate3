@@ -21,6 +21,10 @@
 #include <rex/logging.h>
 #include <rex/platform.h>
 #include <rex/ui/vulkan/instance.h>
+
+#if !REX_PLATFORM_WIN32
+#include <dlfcn.h>
+#endif
 #include <rex/ui/vulkan/presenter.h>
 
 #if REX_PLATFORM_MAC
@@ -32,6 +36,12 @@ REXCVAR_DEFINE_BOOL(vulkan_log_debug_messages, false, "UI/Vulkan", "Log Vulkan d
 namespace rex {
 namespace ui {
 namespace vulkan {
+
+namespace {
+void* g_loader_library_override = nullptr;
+}  // namespace
+
+void SetLoaderLibraryOverride(void* dlopen_handle) { g_loader_library_override = dlopen_handle; }
 
 std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
                                                        const bool try_enable_validation) {
@@ -77,15 +87,27 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
     return nullptr;
   }
 #else
-  loader_loaded = vulkan_instance->loader_.Load(platform::lib_names::kVulkanLoader);
-  if (!loader_loaded) {
-    REXLOG_ERROR("Failed to load {}", platform::lib_names::kVulkanLoader);
-    return nullptr;
+  if (!g_loader_library_override) {
+    loader_loaded = vulkan_instance->loader_.Load(platform::lib_names::kVulkanLoader);
+    if (!loader_loaded) {
+      REXLOG_ERROR("Failed to load {}", platform::lib_names::kVulkanLoader);
+      return nullptr;
+    }
+  } else {
+    REXLOG_INFO("Using the app-provided Vulkan driver library");
   }
 #endif
 
+#if REX_PLATFORM_MAC || REX_PLATFORM_WIN32
 #define XE_VULKAN_LOAD_LOADER_FUNCTION(name) \
   functions_loaded &= (ifn.name = vulkan_instance->loader_.GetSymbol<PFN_##name>(#name)) != nullptr;
+#else
+#define XE_VULKAN_LOAD_LOADER_FUNCTION(name)                                                   \
+  functions_loaded &=                                                                          \
+      (ifn.name = g_loader_library_override                                                    \
+                      ? reinterpret_cast<PFN_##name>(dlsym(g_loader_library_override, #name)) \
+                      : vulkan_instance->loader_.GetSymbol<PFN_##name>(#name)) != nullptr;
+#endif
   XE_VULKAN_LOAD_LOADER_FUNCTION(vkGetInstanceProcAddr);
   XE_VULKAN_LOAD_LOADER_FUNCTION(vkDestroyInstance);
 #undef XE_VULKAN_LOAD_LOADER_FUNCTION

@@ -22,6 +22,11 @@ namespace rex {
 namespace ui {
 namespace vulkan {
 
+// Use a Vulkan driver library the app opened itself (for instance a custom
+// Adreno driver through adrenotools on Android) instead of the system loader.
+// Call before creating the instance; the handle stays open for the process.
+void SetLoaderLibraryOverride(void* dlopen_handle);
+
 class VulkanInstance {
  public:
   static std::unique_ptr<VulkanInstance> Create(bool with_surface, bool try_enable_validation);

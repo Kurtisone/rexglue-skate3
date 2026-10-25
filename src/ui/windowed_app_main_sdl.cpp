@@ -54,6 +54,21 @@
 #include <SDL3/SDL_system.h>
 
 #include <rex/main_android.h>
+
+#include <android/log.h>
+
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+
+#if REX_HAS_ADRENOTOOLS
+#include <adrenotools/driver.h>
+
+namespace rex::ui::vulkan {
+// rex/ui/vulkan/instance.h (not included: it needs the Vulkan headers).
+void SetLoaderLibraryOverride(void* dlopen_handle);
+}  // namespace rex::ui::vulkan
+#endif
 #endif
 
 #if REX_PLATFORM_WIN32
@@ -344,6 +359,89 @@ std::string FindAppRoot() {
   return external ? external : "";
 }
 
+#if REX_HAS_ADRENOTOOLS
+// A custom Vulkan driver (Turnip, a newer Qualcomm driver) unpacked into
+// <app folder>/driver/: its files are copied into the app's private storage
+// (code can't be loaded from shared storage) and opened through adrenotools.
+// The outcome goes to <app folder>/driver_status.txt.
+void LoadCustomVulkanDriver(const std::string& root) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const fs::path source = fs::path(root) / "driver";
+  if (!fs::is_directory(source, ec)) {
+    std::error_code remove_ec;
+    fs::remove(fs::path(root) / "driver_status.txt", remove_ec);
+    return;
+  }
+  std::string status;
+  auto finish = [&](const std::string& message) {
+    status += message + "\n";
+    __android_log_print(ANDROID_LOG_INFO, "rexglue", "%s", message.c_str());
+    FILE* file = fopen((fs::path(root) / "driver_status.txt").c_str(), "w");
+    if (file) {
+      fputs(status.c_str(), file);
+      fclose(file);
+    }
+  };
+  const char* internal = SDL_GetAndroidInternalStoragePath();
+  if (!internal) {
+    finish("No private storage folder for the driver");
+    return;
+  }
+  const fs::path target = fs::path(internal) / "gpu_driver";
+  fs::remove_all(target, ec);
+  fs::create_directories(target, ec);
+  // The driver's library: meta.json's "libraryName" (Turnip / AdrenoTools
+  // packages), else the first .so with "vulkan" in its name.
+  std::string library_name;
+  for (const auto& entry : fs::directory_iterator(source, ec)) {
+    if (!entry.is_regular_file()) {
+      continue;
+    }
+    fs::copy_file(entry.path(), target / entry.path().filename(),
+                  fs::copy_options::overwrite_existing, ec);
+    const std::string name = entry.path().filename().string();
+    if (name == "meta.json") {
+      std::ifstream meta(entry.path());
+      std::string text((std::istreambuf_iterator<char>(meta)), std::istreambuf_iterator<char>());
+      size_t key = text.find("\"libraryName\"");
+      size_t open_quote = key == std::string::npos ? key : text.find('"', text.find(':', key));
+      size_t close_quote =
+          open_quote == std::string::npos ? open_quote : text.find('"', open_quote + 1);
+      if (close_quote != std::string::npos) {
+        library_name = text.substr(open_quote + 1, close_quote - open_quote - 1);
+      }
+    } else if (library_name.empty() && name.size() > 3 &&
+               name.compare(name.size() - 3, 3, ".so") == 0 &&
+               name.find("vulkan") != std::string::npos) {
+      library_name = name;
+    }
+  }
+  if (library_name.empty()) {
+    finish("No driver library found in " + source.string() +
+           " (expected meta.json or a *vulkan*.so)");
+    return;
+  }
+  // The hooks sit next to this library, in the APK's native library folder.
+  Dl_info info;
+  if (!dladdr(reinterpret_cast<void*>(&LoadCustomVulkanDriver), &info) || !info.dli_fname) {
+    finish("Could not find the native library folder");
+    return;
+  }
+  const std::string hook_dir = fs::path(info.dli_fname).parent_path().string() + "/";
+  const std::string driver_dir = target.string() + "/";
+  void* handle = adrenotools_open_libvulkan(RTLD_NOW, ADRENOTOOLS_DRIVER_CUSTOM, nullptr,
+                                            hook_dir.c_str(), driver_dir.c_str(),
+                                            library_name.c_str(), nullptr, nullptr);
+  if (!handle) {
+    finish("adrenotools could not load " + library_name + "; using the system driver");
+    return;
+  }
+  rex::ui::vulkan::SetLoaderLibraryOverride(handle);
+  finish("Loaded custom Vulkan driver " + library_name);
+}
+#endif  // REX_HAS_ADRENOTOOLS
+
 // SDLActivity loads libmain.so and calls SDL_main on its own thread.
 extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char* argv[]) {
   std::string root = FindAppRoot();
@@ -352,6 +450,9 @@ extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char* a
     setenv("HOME", root.c_str(), 1);
     chdir(root.c_str());
     InstallCrashReporter(root.c_str());
+#if REX_HAS_ADRENOTOOLS
+    LoadCustomVulkanDriver(root);
+#endif
   }
   rex::InitializeAndroid();
   int result = RunWindowedApp(argc, argv);
