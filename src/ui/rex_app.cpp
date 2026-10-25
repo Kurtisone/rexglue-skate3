@@ -27,6 +27,7 @@
 #include <rex/ui/overlay/console_overlay.h>
 #include <rex/ui/overlay/debug_overlay.h>
 #include <rex/ui/overlay/fps_overlay.h>
+#include <rex/ui/overlay/quit_overlay.h>
 #include <rex/ui/overlay/settings_overlay.h>
 #include <rex/audio/audio_system.h>
 #include <rex/audio/sdl/sdl_audio_system.h>
@@ -256,6 +257,11 @@ REXCVAR_DEFINE_STRING(gpu_backend, "auto", "GPU",
                       "Direct3D 12 when available. Applied at startup; when the selected API "
                       "fails to initialize, any other compiled-in backend is tried.")
     .allowed({"auto", "d3d12", "vulkan"})
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(quit_dialog, false, "UI",
+                    "Offer a \"Quit the game?\" dialog on Escape and on the menu_chord controller "
+                    "chord (RB+Start by default), for games without a quit option of their own")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(show_fps_counter, false, "UI", "Show the guest FPS counter overlay")
@@ -559,12 +565,22 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
         // Only interactive overlays take input from the guest. Passive dialogs
         // (FPS counter, achievement toast) stay registered for the whole
         // session, so HasDialogs() alone would gate the game permanently.
+        if (quit_dialog_open_.load(std::memory_order_acquire)) {
+          return false;
+        }
         if (!debug_overlay_ && !console_overlay_ && !settings_overlay_ && !achievements_overlay_) {
           return true;
         }
         const auto& io = imgui_drawer_->GetIO();
         return !io.WantCaptureMouse && !io.WantCaptureKeyboard;
       });
+      // The controller chord (menu_chord, RB+Start by default) offers to quit
+      // the game. It fires on the guest thread that polls input.
+      if (REXCVAR_GET(quit_dialog)) {
+        input_sys->SetMenuChordCallback([this]() {
+          app_context().CallInUIThread([this]() { ToggleQuitDialog(); });
+        });
+      }
     }
   }
 
@@ -826,6 +842,11 @@ void ReXApp::SetupOverlays(rex::ui::Presenter* presenter, rex::ui::ImmediateDraw
       settings_overlay_ = std::make_unique<ui::SettingsDialog>(imgui_drawer_.get(), config_path_);
     }
   });
+  // Only when enabled: a bound key is consumed, and apps may use Escape.
+  if (REXCVAR_GET(quit_dialog)) {
+    rex::ui::RegisterBind("bind_quit", "Escape", "Open the quit dialog",
+                          [this] { ToggleQuitDialog(); });
+  }
   rex::ui::RegisterBind("bind_achievements", "F7", "Toggle achievements overlay", [this] {
     if (achievements_overlay_) {
       achievements_overlay_.reset();
@@ -835,6 +856,48 @@ void ReXApp::SetupOverlays(rex::ui::Presenter* presenter, rex::ui::ImmediateDraw
   });
 
   OnCreateDialogs(imgui_drawer_.get());
+}
+
+void ReXApp::ToggleQuitDialog() {
+  if (quit_dialog_) {
+    quit_dialog_.reset();
+    quit_dialog_open_.store(false, std::memory_order_release);
+    return;
+  }
+  if (!imgui_drawer_ || shutting_down_.load(std::memory_order_acquire)) {
+    return;
+  }
+  auto poll_gamepad = [this]() {
+    ui::QuitDialog::Gamepad pad;
+    auto* input_sys =
+        runtime_ ? static_cast<rex::input::InputSystem*>(runtime_->input_system()) : nullptr;
+    rex::input::X_INPUT_GAMEPAD gamepad = {};
+    if (input_sys && input_sys->GetUiGamepadState(&gamepad)) {
+      pad.connected = true;
+      pad.buttons = static_cast<uint16_t>(gamepad.buttons);
+      pad.thumb_ly = static_cast<int16_t>(gamepad.thumb_ly);
+    }
+    return pad;
+  };
+  // Both actions run inside the dialog's own draw, so tear it down afterwards.
+  auto on_quit = [this]() {
+    app_context().CallInUIThreadDeferred([this]() {
+      quit_dialog_.reset();
+      quit_dialog_open_.store(false, std::memory_order_release);
+      if (window_) {
+        window_->RequestClose();
+      }
+    });
+  };
+  auto on_cancel = [this]() {
+    app_context().CallInUIThreadDeferred([this]() {
+      quit_dialog_.reset();
+      quit_dialog_open_.store(false, std::memory_order_release);
+    });
+  };
+  quit_dialog_ = std::make_unique<ui::QuitDialog>(imgui_drawer_.get(), std::move(poll_gamepad),
+                                                  std::move(on_quit), std::move(on_cancel));
+  quit_dialog_open_.store(true, std::memory_order_release);
 }
 
 void ReXApp::LaunchModule() {
@@ -990,11 +1053,13 @@ void ReXApp::OnDestroy() {
   rex::ui::UnregisterBind("bind_console");
   rex::ui::UnregisterBind("bind_settings");
   rex::ui::UnregisterBind("bind_achievements");
+  rex::ui::UnregisterBind("bind_quit");
   // The show_fps_counter callback captures `this` - drop it before teardown.
   rex::cvar::UnregisterChangeCallbacks("show_fps_counter");
 
   // ImGui cleanup (reverse of setup)
   fps_overlay_.reset();
+  quit_dialog_.reset();
   if (achievement_notification_listener_ != 0) {
     if (runtime_ && runtime_->kernel_state()) {
       achievements().UnregisterCallback(achievement_notification_listener_);

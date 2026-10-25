@@ -55,6 +55,7 @@ namespace ui {
 class AchievementNotificationDialog;
 class ConsoleDialog;
 class FpsOverlayDialog;
+class QuitDialog;
 class SettingsDialog;
 }  // namespace ui
 
@@ -283,6 +284,8 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
   // independently of how the presenter/drawer were obtained. `presenter` may be
   // null (detached mode).
   void SetupOverlays(ui::Presenter* presenter, ui::ImmediateDrawer* drawer);
+  // Opens or closes the "Quit the game?" dialog. UI thread only.
+  void ToggleQuitDialog();
 
   // WindowedApp overrides
   bool OnInitialize() override;
@@ -325,6 +328,9 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
   std::unique_ptr<ui::ConsoleDialog> console_overlay_;
   std::unique_ptr<ui::SettingsDialog> settings_overlay_;
   std::unique_ptr<ui::FpsOverlayDialog> fps_overlay_;
+  std::unique_ptr<ui::QuitDialog> quit_dialog_;
+  // Mirrors quit_dialog_ for the input gate, which runs on guest threads.
+  std::atomic<bool> quit_dialog_open_{false};
   std::unique_ptr<ui::ImGuiDialog> achievements_overlay_;
   std::shared_ptr<ui::AchievementNotificationDialog> achievement_notification_;
   uint64_t achievement_notification_listener_ = 0;
