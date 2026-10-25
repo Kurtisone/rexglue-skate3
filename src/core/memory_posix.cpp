@@ -487,6 +487,11 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
     shm_unlink(full_path.c_str());
     return kFileMappingHandleInvalid;
   }
+  // Nothing reopens the object by name: unlink it now so the descriptor alone
+  // keeps it alive. Otherwise a crash or kill leaves the whole guest memory
+  // file (4.5 GB) in /dev/shm until reboot, and once tmpfs fills up the next
+  // launch stalls with a black screen.
+  shm_unlink(full_path.c_str());
   return static_cast<FileMappingHandle>(ret);
 #endif
 }
