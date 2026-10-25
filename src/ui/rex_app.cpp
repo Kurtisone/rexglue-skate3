@@ -47,6 +47,7 @@
 #ifdef __GLIBC__
 #include <gnu/libc-version.h>
 #endif
+#include <sys/stat.h>
 #include <sys/utsname.h>
 #endif
 
@@ -509,8 +510,30 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
     rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
     return false;
   }
-  if (!std::filesystem::is_directory(paths.game_data_root)) {
-    auto msg = fmt::format("--game_data_root does not exist: {}", paths.game_data_root.string());
+  // The error_code form: on Android an inaccessible folder (permissions) makes
+  // the throwing form abort the app before anything is shown.
+  std::error_code game_dir_error;
+  if (!std::filesystem::is_directory(paths.game_data_root, game_dir_error)) {
+    auto msg = game_dir_error
+                   ? fmt::format("--game_data_root cannot be read: {} ({})",
+                                 paths.game_data_root.string(), game_dir_error.message())
+                   : fmt::format("--game_data_root does not exist: {}",
+                                 paths.game_data_root.string());
+#if REX_PLATFORM_ANDROID
+    // Which component Android refuses, and whose it is.
+    REXLOG_ERROR("App uid {} gid {}", getuid(), getgid());
+    std::filesystem::path component;
+    for (const auto& part : paths.game_data_root / "default.xex") {
+      component /= part;
+      struct stat st;
+      if (stat(component.c_str(), &st) == 0) {
+        REXLOG_ERROR("  {}: uid {} gid {} mode {:o}", component.string(), st.st_uid, st.st_gid,
+                     st.st_mode);
+      } else {
+        REXLOG_ERROR("  {}: {}", component.string(), strerror(errno));
+      }
+    }
+#endif
     REXLOG_ERROR("{}", msg);
     rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
     return false;
