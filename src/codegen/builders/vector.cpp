@@ -1264,17 +1264,14 @@ bool build_vpkuhus(BuilderContext& ctx) {
   // NOTE(tomc): _mm_packus_epi16 treats inputs as signed, so we need custom saturation for
   // unsigned. Unsigned halfwords >= 0x8000 would be interpreted as negative and clamped to 0
   // instead of 0xFF.
-  // Sources are copied first: vD often aliases vA or vB, and the per-byte stores would
-  // otherwise overwrite halfwords that later iterations still read.
-  ctx.println("\t{{ PPCVRegister a = {}, b = {};", ctx.v(ctx.insn.operands[1]),
-              ctx.v(ctx.insn.operands[2]));
+  // vD can alias vA/vB, so pack into vTemp first.
   for (size_t i = 0; i < 8; i++) {
-    ctx.println("\t{}.u8[{}] = a.u16[{}] > 0xFF ? 0xFF : (uint8_t)a.u16[{}];",
-                ctx.v(ctx.insn.operands[0]), 15 - i, 7 - i, 7 - i);
-    ctx.println("\t{}.u8[{}] = b.u16[{}] > 0xFF ? 0xFF : (uint8_t)b.u16[{}];",
-                ctx.v(ctx.insn.operands[0]), 7 - i, 7 - i, 7 - i);
+    ctx.println("\t{}.u8[{}] = {}.u16[{}] > 0xFF ? 0xFF : (uint8_t){}.u16[{}];", ctx.v_temp(),
+                15 - i, ctx.v(ctx.insn.operands[1]), 7 - i, ctx.v(ctx.insn.operands[1]), 7 - i);
+    ctx.println("\t{}.u8[{}] = {}.u16[{}] > 0xFF ? 0xFF : (uint8_t){}.u16[{}];", ctx.v_temp(),
+                7 - i, ctx.v(ctx.insn.operands[2]), 7 - i, ctx.v(ctx.insn.operands[2]), 7 - i);
   }
-  ctx.println("\t}}");
+  ctx.println("\t{} = {};", ctx.v(ctx.insn.operands[0]), ctx.v_temp());
   return true;
 }
 
@@ -1295,17 +1292,14 @@ bool build_vpkuwus(BuilderContext& ctx) {
 
   // NOTE(tomc): _mm_packus_epi32 treats inputs as signed, so we need custom saturation for unsigned
   // Saturate each u32 to [0, 0xFFFF], then pack to u16
-  // Sources are copied first: vD often aliases vA or vB (e.g. vpkuwus v0,v12,v0), and the
-  // per-halfword stores would otherwise overwrite words that later iterations still read.
-  ctx.println("\t{{ PPCVRegister a = {}, b = {};", ctx.v(ctx.insn.operands[1]),
-              ctx.v(ctx.insn.operands[2]));
+  // vD can alias vA/vB, so pack into vTemp first.
   for (size_t i = 0; i < 4; i++) {
-    ctx.println("\t{}.u16[{}] = a.u32[{}] > 0xFFFF ? 0xFFFF : (uint16_t)a.u32[{}];",
-                ctx.v(ctx.insn.operands[0]), 7 - i, 3 - i, 3 - i);
-    ctx.println("\t{}.u16[{}] = b.u32[{}] > 0xFFFF ? 0xFFFF : (uint16_t)b.u32[{}];",
-                ctx.v(ctx.insn.operands[0]), 3 - i, 3 - i, 3 - i);
+    ctx.println("\t{}.u16[{}] = {}.u32[{}] > 0xFFFF ? 0xFFFF : (uint16_t){}.u32[{}];", ctx.v_temp(),
+                7 - i, ctx.v(ctx.insn.operands[1]), 3 - i, ctx.v(ctx.insn.operands[1]), 3 - i);
+    ctx.println("\t{}.u16[{}] = {}.u32[{}] > 0xFFFF ? 0xFFFF : (uint16_t){}.u32[{}];", ctx.v_temp(),
+                3 - i, ctx.v(ctx.insn.operands[2]), 3 - i, ctx.v(ctx.insn.operands[2]), 3 - i);
   }
-  ctx.println("\t}}");
+  ctx.println("\t{} = {};", ctx.v(ctx.insn.operands[0]), ctx.v_temp());
   return true;
 }
 

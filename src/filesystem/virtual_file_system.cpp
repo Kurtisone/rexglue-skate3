@@ -472,15 +472,12 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry, const std::string_view p
             static_cast<uint32_t>(creation_disposition));
         return X_STATUS_ACCESS_DENIED;
       case FileDisposition::kSuperscede:
-        // Replace (by delete + recreate).
-        if (!entry->Delete()) {
-          LogSkate3ChanCenterStreamFileOpen(
-              "delete-denied", path, entry->absolute_path(), X_STATUS_ACCESS_DENIED,
-              static_cast<uint32_t>(*out_action), desired_access,
-              static_cast<uint32_t>(creation_disposition));
-          return X_STATUS_ACCESS_DENIED;
+        if (!entry->Truncate()) {
+          if (!entry->Delete()) {
+            return X_STATUS_ACCESS_DENIED;
+          }
+          entry = nullptr;
         }
-        entry = nullptr;
         *out_action = FileAction::kSuperseded;
         break;
       case FileDisposition::kOpen:
@@ -490,16 +487,11 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry, const std::string_view p
         break;
       case FileDisposition::kOverwrite:
       case FileDisposition::kOverwriteIf:
-        // Overwrite by delete + recreate, or truncate if delete fails
-        // (host file may be briefly locked by cloud sync, AV, etc.).
-        if (entry->Delete()) {
+        if (!entry->Truncate()) {
+          if (!entry->Delete()) {
+            return X_STATUS_ACCESS_DENIED;
+          }
           entry = nullptr;
-        } else if (!entry->Truncate()) {
-          LogSkate3ChanCenterStreamFileOpen(
-              "truncate-denied", path, entry->absolute_path(), X_STATUS_ACCESS_DENIED,
-              static_cast<uint32_t>(*out_action), desired_access,
-              static_cast<uint32_t>(creation_disposition));
-          return X_STATUS_ACCESS_DENIED;
         }
         *out_action = FileAction::kOverwritten;
         break;

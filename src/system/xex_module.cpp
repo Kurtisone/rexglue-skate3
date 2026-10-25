@@ -35,6 +35,10 @@
 #include <rex/system/xmodule.h>
 #include <rex/types.h>
 
+REXCVAR_DEFINE_BOOL(writable_code_segments, false, "Memory",
+                    "Enables a program to write to its own code segments in memory")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 static const uint8_t xe_xex2_retail_key[16] = {0x20, 0xB1, 0x85, 0xA5, 0x9D, 0x28, 0xFD, 0xC3,
                                                0x40, 0x58, 0x3F, 0xBB, 0x08, 0x96, 0xBF, 0x91};
 static const uint8_t xe_xex2_devkit_key[16] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -1084,7 +1088,18 @@ bool XexModule::LoadContinue() {
 
     auto address = base_address_ + (page * page_size);
     auto size = desc.page_count * page_size;
-    heap->Protect(address, size, memory::kMemoryProtectRead | memory::kMemoryProtectWrite);
+    switch (desc.info) {
+      case XEX_SECTION_CODE:
+      case XEX_SECTION_READONLY_DATA:
+        heap->Protect(address, size,
+                      REXCVAR_GET(writable_code_segments)
+                          ? memory::kMemoryProtectRead | memory::kMemoryProtectWrite
+                          : memory::kMemoryProtectRead);
+        break;
+      case XEX_SECTION_DATA:
+        heap->Protect(address, size, memory::kMemoryProtectRead | memory::kMemoryProtectWrite);
+        break;
+    }
 
     page += desc.page_count;
   }

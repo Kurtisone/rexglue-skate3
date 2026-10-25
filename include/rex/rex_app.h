@@ -23,6 +23,7 @@
 
 #include <rex/image_info.h>
 #include <rex/platform.h>
+#include <rex/logging/types.h>
 #include <rex/runtime.h>
 #if REX_PLATFORM_MAC
 #include <rex/system/xthread.h>
@@ -120,6 +121,8 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
   /// Called after path defaults are computed, before Runtime is constructed.
   /// Override to adjust game/user/update data paths programmatically.
   virtual void OnConfigurePaths(PathConfig& paths) { (void)paths; }
+
+  virtual void OnConfigureLogging(LogConfig& config) { (void)config; }
 
   /// Called after SetupPresentation returns (window and ImGui drawer are live)
   /// and before Runtime construction. Override to resolve paths from user

@@ -79,6 +79,7 @@ class SDLInputDriver final : public InputDriver, public rex::ui::WindowListener 
   std::unique_lock<std::mutex> DrainAndLock();
   void ProcessEventLocked(const SDL_Event& event);
   void StopRumbleLocked(ControllerState& state);
+  void OnJoystickDeviceAddedLocked(const SDL_Event& event);
   void OnControllerDeviceAddedLocked(const SDL_Event& event);
   void OnControllerDeviceRemovedLocked(const SDL_Event& event);
   void OnControllerDeviceAxisMotionLocked(const SDL_Event& event);

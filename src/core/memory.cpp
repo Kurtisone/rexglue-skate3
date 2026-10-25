@@ -9,7 +9,6 @@
  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
-#include <rex/cvar.h>
 #include <rex/memory/utils.h>
 #include <rex/platform.h>
 
