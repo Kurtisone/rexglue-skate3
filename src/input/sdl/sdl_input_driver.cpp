@@ -24,6 +24,10 @@
 
 REXCVAR_DEFINE_STRING(hid_mappings_file, "gamecontrollerdb.txt", "Input",
                       "Path to SDL gamecontroller mappings file");
+REXCVAR_DEFINE_BOOL(hid_hide_steam_input_duplicates, true, "Input",
+                    "When Steam Input exposes its virtual gamepad, hide the physical Valve "
+                    "controllers it already stands for (Steam Deck, Steam Controller), so one "
+                    "pad does not show up as two players");
 REXCVAR_DEFINE_UINT32(hid_sdl_rumble_duration_ms, 100, "Input",
                       "SDL rumble pulse duration for nonzero XInput vibration");
 
@@ -159,7 +163,28 @@ void SDLInputDriver::EnumerateDevices(std::vector<DeviceInfo>& out) {
 
   auto guard = DrainAndLock();
 
+  // Under Steam (Steam Deck game mode, Big Picture) SDL can see both Steam
+  // Input's virtual gamepad and the Valve hardware behind it; both then get a
+  // guest user and every press acts twice. Keep the virtual pad, which carries
+  // the user's Steam Input configuration.
+  constexpr uint16_t kValveVendorId = 0x28DE;
+  constexpr uint16_t kSteamVirtualGamepadProductId = 0x11FF;
+  bool steam_virtual_present = false;
+  if (REXCVAR_GET(hid_hide_steam_input_duplicates)) {
+    for (const auto& controller : controllers_) {
+      if (SDL_GetGamepadVendor(controller.sdl) == kValveVendorId &&
+          SDL_GetGamepadProduct(controller.sdl) == kSteamVirtualGamepadProductId) {
+        steam_virtual_present = true;
+        break;
+      }
+    }
+  }
+
   for (const auto& controller : controllers_) {
+    if (steam_virtual_present && SDL_GetGamepadVendor(controller.sdl) == kValveVendorId &&
+        SDL_GetGamepadProduct(controller.sdl) != kSteamVirtualGamepadProductId) {
+      continue;
+    }
     DeviceInfo info;
     info.id = controller.id;
     const char* name = SDL_GetGamepadName(controller.sdl);
