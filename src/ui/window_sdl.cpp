@@ -417,6 +417,7 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
     auto* native_window = static_cast<ANativeWindow*>(SDL_GetPointerProperty(
         SDL_GetWindowProperties(sdl_window_), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr));
     if (native_window) {
+      android_native_window_ = native_window;
       return std::make_unique<AndroidNativeWindowSurface>(native_window);
     }
   }
@@ -458,8 +459,62 @@ void WindowSDL::RequestPaintImpl() {
 
 void WindowSDL::HandlePaintEvent() {
   paint_pending_.store(false, std::memory_order_release);
+#if REX_PLATFORM_ANDROID
+  SyncAndroidSurface();
+#endif
   OnPaint();
 }
+
+#if REX_PLATFORM_ANDROID
+void WindowSDL::OnAndroidEnterBackground() {
+  // The native window is about to go away: stop presenting to it.
+  android_in_background_ = true;
+  if (HasSurface()) {
+    OnSurfaceChanged(false);
+  }
+  android_native_window_ = nullptr;
+}
+
+void WindowSDL::OnAndroidEnterForeground() {
+  android_in_background_ = false;
+  SyncAndroidSurface();
+  // The new surface may only arrive after the resume, and nothing paints
+  // while there is no surface: poll for it for a few seconds.
+  android_resume_checks_.store(50, std::memory_order_relaxed);
+  SDL_AddTimer(100, AndroidResumeTimerCallback, this);
+}
+
+uint32_t WindowSDL::AndroidResumeTimerCallback(void* userdata, SDL_TimerID timer_id,
+                                               uint32_t interval) {
+  (void)timer_id;
+  auto* window = static_cast<WindowSDL*>(userdata);
+  if (window->android_resume_checks_.fetch_sub(1, std::memory_order_relaxed) <= 1) {
+    return 0;
+  }
+  // Runs on SDL's timer thread; the check itself happens on the UI thread.
+  SDL_Event event{};
+  event.type = window->sdl_app_context().paint_event_type();
+  event.user.windowID = window->sdl_window_id_;
+  SDL_PushEvent(&event);
+  return interval;
+}
+
+void WindowSDL::SyncAndroidSurface() {
+  if (android_in_background_ || !sdl_window_ || phase() != Phase::kOpen) {
+    return;
+  }
+  void* native_window = SDL_GetPointerProperty(SDL_GetWindowProperties(sdl_window_),
+                                               SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr);
+  if (!native_window || (native_window == android_native_window_ && HasSurface())) {
+    return;
+  }
+  REXLOG_INFO("Android: attaching the presenter to the new native window");
+  OnSurfaceChanged(true);
+  if (HasSurface()) {
+    android_resume_checks_.store(0, std::memory_order_relaxed);
+  }
+}
+#endif
 
 void WindowSDL::HandleWindowEvent(SDL_Event& event) {
   WindowDestructionReceiver destruction_receiver(this);

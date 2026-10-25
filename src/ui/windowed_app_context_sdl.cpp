@@ -130,6 +130,18 @@ void SDLWindowedAppContext::ProcessEvent(SDL_Event& event) {
     return;
   }
   switch (event.type) {
+#if REX_PLATFORM_ANDROID
+    case SDL_EVENT_WILL_ENTER_BACKGROUND:
+      for (const auto& [id, window] : windows_) {
+        window->OnAndroidEnterBackground();
+      }
+      break;
+    case SDL_EVENT_DID_ENTER_FOREGROUND:
+      for (const auto& [id, window] : windows_) {
+        window->OnAndroidEnterForeground();
+      }
+      break;
+#endif
     case SDL_EVENT_QUIT:
       if (synchronously_handled_quit_events_ != 0) {
         --synchronously_handled_quit_events_;

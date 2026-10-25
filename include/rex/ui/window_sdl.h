@@ -42,6 +42,13 @@ class WindowSDL final : public Window {
   void HandleMouseEvent(SDL_Event& event);
   void HandleDropEvent(SDL_Event& event);
   void HandlePaintEvent();
+#if REX_PLATFORM_ANDROID
+  // Android destroys the window's native surface while the app is in the
+  // background and makes a new one when it comes back. Called on the UI thread
+  // for SDL_EVENT_WILL_ENTER_BACKGROUND / SDL_EVENT_DID_ENTER_FOREGROUND.
+  void OnAndroidEnterBackground();
+  void OnAndroidEnterForeground();
+#endif
 
  protected:
   uint32_t GetLatestDpiImpl() const override;
@@ -79,6 +86,17 @@ class WindowSDL final : public Window {
   // Ratio between SDL window coordinates and the physical pixels listeners
   // expect. Never zero.
   float GetPixelDensity() const;
+
+#if REX_PLATFORM_ANDROID
+  // Reattaches the presenter once SDL has the new native window.
+  void SyncAndroidSurface();
+  static uint32_t AndroidResumeTimerCallback(void* userdata, SDL_TimerID timer_id,
+                                             uint32_t interval);
+  // The ANativeWindow the presenter's surface was made for.
+  void* android_native_window_ = nullptr;
+  bool android_in_background_ = false;
+  std::atomic<int> android_resume_checks_{0};
+#endif
 
   SDL_Window* sdl_window_ = nullptr;
   SDL_WindowID sdl_window_id_ = 0;
