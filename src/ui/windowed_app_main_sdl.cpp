@@ -15,6 +15,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <vector>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -37,6 +38,7 @@
 #include <SDL3/SDL_hints.h>
 
 #if REX_PLATFORM_ANDROID
+#include <dirent.h>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -308,15 +310,39 @@ void InstallCrashReporter(const char* folder) {
 
 }  // namespace
 
+// The app folder (game/, config, logs, user data): a skate1/ folder at the
+// root of the internal storage or of a microSD card, readable with the "All
+// files access" permission and reachable by any file manager or transfer, if
+// it holds game/default.xex; else the app's own external files folder
+// (Android/data/<package>/files), which needs no permission.
+std::string FindAppRoot() {
+  std::vector<std::string> candidates = {"/storage/emulated/0/skate1"};
+  if (DIR* storage = opendir("/storage")) {
+    while (dirent* entry = readdir(storage)) {
+      std::string name = entry->d_name;
+      if (name != "." && name != ".." && name != "emulated" && name != "self") {
+        candidates.push_back("/storage/" + name + "/skate1");
+      }
+    }
+    closedir(storage);
+  }
+  for (const std::string& candidate : candidates) {
+    if (access((candidate + "/game/default.xex").c_str(), R_OK) == 0) {
+      return candidate;
+    }
+  }
+  const char* external = SDL_GetAndroidExternalStoragePath();
+  return external ? external : "";
+}
+
 // SDLActivity loads libmain.so and calls SDL_main on its own thread.
 extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char* argv[]) {
-  // Game data, config, logs and user data all live in the app's external
-  // files folder: /storage/emulated/0/Android/data/<package>/files.
-  if (const char* external = SDL_GetAndroidExternalStoragePath()) {
-    setenv("REX_APP_ROOT", external, 1);
-    setenv("HOME", external, 1);
-    chdir(external);
-    InstallCrashReporter(external);
+  std::string root = FindAppRoot();
+  if (!root.empty()) {
+    setenv("REX_APP_ROOT", root.c_str(), 1);
+    setenv("HOME", root.c_str(), 1);
+    chdir(root.c_str());
+    InstallCrashReporter(root.c_str());
   }
   rex::InitializeAndroid();
   int result = RunWindowedApp(argc, argv);
