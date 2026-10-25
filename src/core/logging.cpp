@@ -19,6 +19,9 @@
 
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
+#ifdef __ANDROID__  // before rex/platform.h
+#include <spdlog/sinks/android_sink.h>
+#endif
 
 #include <toml++/toml.hpp>
 
@@ -174,6 +177,9 @@ void InitLoggingEarly() {
 
 #if REX_PLATFORM_WIN32
   auto sink = std::make_shared<spdlog::sinks::msvc_sink_mt>();
+#elif REX_PLATFORM_ANDROID
+  // An app's stdout goes nowhere; logcat is where early messages can be read.
+  auto sink = std::make_shared<spdlog::sinks::android_sink_mt>("rexglue");
 #else
   auto sink = std::make_shared<spdlog::sinks::stdout_sink_mt>();
 #endif
@@ -233,12 +239,22 @@ void InitLogging(const LogConfig& config) {
 #endif
 
   // Console sink (stdout, colored). Intended for console-subsystem processes.
+#if REX_PLATFORM_ANDROID
+  // Always mirror to logcat (adb logcat -s rexglue) next to the file log.
+  {
+    auto sink = std::make_shared<spdlog::sinks::android_sink_mt>("rexglue");
+    sink->set_level(spdlog::level::trace);
+    sink->set_pattern(config.console_pattern);
+    g_console_sink = sink;
+  }
+#else
   if (config.log_to_console) {
     auto sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
     sink->set_level(spdlog::level::trace);
     sink->set_pattern(config.console_pattern);
     g_console_sink = sink;
   }
+#endif
 
   // File sink (rotating) with sequential naming fallback
   std::string resolved_path;

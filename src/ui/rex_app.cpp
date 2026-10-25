@@ -44,7 +44,9 @@
 #include <rex/version.h>
 
 #if REX_PLATFORM_LINUX
+#ifdef __GLIBC__
 #include <gnu/libc-version.h>
+#endif
 #include <sys/utsname.h>
 #endif
 
@@ -167,7 +169,9 @@ void LogLinuxRuntimeDiagnostics() {
   if (uname(&uts) == 0) {
     REXLOG_INFO("  Kernel: {} {} {}", uts.sysname, uts.release, uts.machine);
   }
+#ifdef __GLIBC__
   REXLOG_INFO("  glibc: {}", gnu_get_libc_version());
+#endif
 
 #if defined(__clang__)
   REXLOG_INFO("  Compiler: clang {}", __clang_version__);

@@ -24,10 +24,8 @@
 #include <rex/platform.h>
 #include <rex/ui/windowed_app_context.h>
 
-#if REX_PLATFORM_ANDROID
-// Multiple apps in a single library instead of separate executables.
-#define XE_UI_WINDOWED_APPS_IN_LIBRARY 1
-#endif
+// Xenia's Android port put several apps in one library; a rexglue app is a
+// single library (libmain.so) with its own creator on every platform.
 
 namespace rex {
 namespace ui {

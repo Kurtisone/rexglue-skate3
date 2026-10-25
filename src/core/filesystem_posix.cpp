@@ -35,6 +35,9 @@
 #include <rex/string.h>
 
 #include <dirent.h>
+#if REX_PLATFORM_ANDROID
+#include <dlfcn.h>
+#endif
 #include <ftw.h>
 #include <libgen.h>
 #include <pwd.h>
@@ -95,6 +98,15 @@ std::filesystem::path GetExecutablePath() {
   std::error_code ec;
   std::filesystem::path canonical_path = std::filesystem::weakly_canonical(executable_path, ec);
   return ec ? std::filesystem::path(executable_path) : canonical_path;
+#elif REX_PLATFORM_ANDROID
+  // /proc/self/exe is the zygote's app_process. The app's own code is this
+  // shared library, extracted into the APK's native library folder next to
+  // the GPU plugin.
+  Dl_info info;
+  if (!dladdr(reinterpret_cast<void*>(&GetExecutablePath), &info) || !info.dli_fname) {
+    return {};
+  }
+  return std::filesystem::path(info.dli_fname);
 #else
   char buff[FILENAME_MAX] = "";
   ssize_t length = readlink("/proc/self/exe", buff, FILENAME_MAX - 1);
