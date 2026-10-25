@@ -589,9 +589,13 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
       // interactive overlay or the quit dialog takes it. Passive dialogs (FPS
       // counter, achievement toast) stay registered for the whole session, so
       // HasDialogs() alone would gate the game permanently.
+#if !REX_PLATFORM_ANDROID
+      // Android delivers no input to an app in the background, and the SDL
+      // window's focus state there doesn't track the activity reliably.
       if (window_ && !window_->HasFocus()) {
         return false;
       }
+#endif
       if (quit_dialog_open_.load(std::memory_order_acquire)) {
         return false;
       }
