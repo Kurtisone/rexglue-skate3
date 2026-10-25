@@ -48,6 +48,7 @@
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <string>
 
 #include <SDL3/SDL_system.h>
@@ -268,9 +269,17 @@ _Unwind_Reason_Code CrashUnwindFrame(_Unwind_Context* context, void* arg) {
 }
 
 void CrashHandler(int signal_number, siginfo_t* info, void* context) {
-  char buffer[128];
-  snprintf(buffer, sizeof(buffer), "\nFatal signal %d (code %d) in thread %d\n", signal_number,
-           info ? info->si_code : 0, int(gettid()));
+  char buffer[192];
+  // When, and which build (the compile time of this file).
+  time_t now = time(nullptr);
+  struct tm local_time;
+  char when[32] = "?";
+  if (localtime_r(&now, &local_time)) {
+    strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", &local_time);
+  }
+  snprintf(buffer, sizeof(buffer), "\n%s, build " __DATE__ " " __TIME__
+           ": fatal signal %d (code %d) in thread %d\n",
+           when, signal_number, info ? info->si_code : 0, int(gettid()));
   CrashWrite(buffer);
   if (info) {
     CrashWriteHex("fault address ", uintptr_t(info->si_addr));
