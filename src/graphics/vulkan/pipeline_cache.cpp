@@ -10,6 +10,7 @@
  */
 
 #include <algorithm>
+#include <cstdio>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -428,6 +429,10 @@ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& c
         rex::path_to_utf8(pipeline_storage_file_path));
     return;
   }
+  // "a+" leaves the read position at the end of the file on BSD-derived C
+  // libraries (Android's bionic, macOS): reading the header there failed, and
+  // the storage was truncated and rebuilt on every launch. Writes still append.
+  std::rewind(pipeline_storage_file_);
   pipeline_storage_file_flush_needed_ = false;
   // 'XEPS'.
   const uint32_t pipeline_storage_magic = 0x53504558;
@@ -514,6 +519,7 @@ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& c
     return;
   }
   ++shader_storage_index_;
+  std::rewind(shader_storage_file_);  // See the pipeline storage above.
   shader_storage_file_flush_needed_ = false;
   struct {
     uint32_t magic;
