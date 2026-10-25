@@ -556,7 +556,10 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
     auto* input_sys = static_cast<rex::input::InputSystem*>(runtime_->input_system());
     if (input_sys) {
       input_sys->SetActiveCallback([this]() {
-        if (!imgui_drawer_->HasDialogs()) {
+        // Only interactive overlays take input from the guest. Passive dialogs
+        // (FPS counter, achievement toast) stay registered for the whole
+        // session, so HasDialogs() alone would gate the game permanently.
+        if (!debug_overlay_ && !console_overlay_ && !settings_overlay_ && !achievements_overlay_) {
           return true;
         }
         const auto& io = imgui_drawer_->GetIO();
