@@ -923,7 +923,11 @@ bool GetResolveInfo(const RegisterFile& regs, const memory::Memory& memory,
   // Get the sample selection to safely pass to the shader.
   xenos::CopySampleSelect sample_select = SanitizeCopySampleSelect(
       rb_copy_control.copy_sample_select, rb_surface_info.msaa_samples, is_depth);
-  if (rb_copy_control.copy_sample_select != sample_select) {
+  // Logged once: with gpu_force_msaa_1x a title's resolves of formerly
+  // multisampled surfaces keep asking for sample averaging, several per frame.
+  static bool sample_select_warned = false;
+  if (rb_copy_control.copy_sample_select != sample_select && !sample_select_warned) {
+    sample_select_warned = true;
     REXGPU_WARN(
         "Incorrect resolve sample selected for {}-sample {}: {}, treating like "
         "{}",
