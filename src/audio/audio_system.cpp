@@ -11,7 +11,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <condition_variable>
 #include <mutex>
@@ -444,7 +446,15 @@ void AudioSystem::SubmitFrame(size_t index, uint32_t samples_ptr) {
 
   const std::string dump_path = REXCVAR_GET(audio_dump_path);
   if (!dump_path.empty()) {
-    static FILE* dump_file = std::fopen(dump_path.c_str(), "ab");
+    static FILE* dump_file = [&dump_path] {
+      FILE* file = std::fopen(dump_path.c_str(), "ab");
+      if (file) {
+        REXAPU_INFO("Recording the guest's audio frames to {}", dump_path);
+      } else {
+        REXAPU_ERROR("Can't open audio_dump_path {}: {}", dump_path, std::strerror(errno));
+      }
+      return file;
+    }();
     if (dump_file) {
       std::fwrite(memory()->TranslateVirtual(samples_ptr), sizeof(float), 256 * 6, dump_file);
     }
