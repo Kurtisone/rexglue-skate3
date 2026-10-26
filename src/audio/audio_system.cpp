@@ -58,6 +58,11 @@ REXCVAR_DEFINE_BOOL(audio_silent_realtime, false, "Audio",
                     "real-time rate instead of as fast as they come (closer to a machine with "
                     "sound, for testing)");
 
+REXCVAR_DEFINE_INT32(audio_silent_burst, 1, "Audio",
+                     "With audio_silent_realtime, consume this many frames at a time, as a "
+                     "device with a larger period does (4 = PipeWire's 1024 samples)")
+    .range(1, 16);
+
 REXCVAR_DEFINE_STRING(audio_dump_path, "", "Audio",
                       "Append every audio frame the guest submits to this file, as raw 5.1 "
                       "(256 big-endian floats per channel, channels in sequence), to inspect "
@@ -112,12 +117,16 @@ class SilentAudioDriver final : public rex::audio::AudioDriver {
       if (stopping_) {
         return;
       }
-      next = std::max(next + kFramePeriod, std::chrono::steady_clock::now());
+      // A device with a large period (PipeWire's 1024 samples on the Steam
+      // Deck) consumes, and so credits, several frames at once.
+      const uint32_t burst = uint32_t(std::clamp(REXCVAR_GET(audio_silent_burst), 1, 16));
+      next = std::max(next + kFramePeriod * burst, std::chrono::steady_clock::now());
       if (cv_.wait_until(lock, next, [this] { return stopping_; })) {
         return;
       }
-      submitted_--;
-      semaphore_->Release(1, nullptr);
+      const uint32_t count = std::min(submitted_, burst);
+      submitted_ -= count;
+      semaphore_->Release(int(count), nullptr);
     }
   }
 

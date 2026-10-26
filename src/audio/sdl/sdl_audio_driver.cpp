@@ -54,6 +54,13 @@ REXCVAR_DEFINE_BOOL(audio_force_stereo, false, "Audio",
                     "when the device reports more channels. For stereo speakers exposed as a "
                     "surround sink (the Steam Deck's), whose system downmix can clip.");
 
+REXCVAR_DEFINE_BOOL(audio_smooth_credits, true, "Audio",
+                    "Hand the guest the frames the device consumed one per frame period (5.3 ms) "
+                    "instead of all at once. A device with a large period (PipeWire's 1024 "
+                    "samples on the Steam Deck) frees 4 at a time; the guest then mixes 4 frames "
+                    "back to back and its audio engine, made for one every 5.3 ms, submits "
+                    "silent ones in between (crackle on voice and music).");
+
 namespace {
 
 uint64_t AudioNowNs() {
@@ -145,6 +152,10 @@ bool SDLAudioDriver::Initialize() {
               device_name ? device_name : "?", obtained_spec.channels, obtained_spec.freq,
               static_cast<uint32_t>(obtained_spec.format), static_cast<int>(sdl_device_channels_));
 
+  if (REXCVAR_GET(audio_smooth_credits)) {
+    smoother_thread_ = std::thread([this] { SmootherMain(); });
+  }
+
   if (!SDL_ResumeAudioDevice(sdl_device)) {
     REXAPU_ERROR("SDL_ResumeAudioDevice() failed: {}", SDL_GetError());
     return false;
@@ -198,6 +209,14 @@ void SDLAudioDriver::SubmitFrame(uint32_t frame_ptr) {
 }
 
 void SDLAudioDriver::Shutdown() {
+  if (smoother_thread_.joinable()) {
+    {
+      std::lock_guard<std::mutex> lock(smoother_mutex_);
+      smoother_stopping_ = true;
+    }
+    smoother_cv_.notify_one();
+    smoother_thread_.join();
+  }
   if (sdl_stream_) {
     SDL_DestroyAudioStream(sdl_stream_);
     sdl_stream_ = nullptr;
@@ -402,11 +421,7 @@ uint64_t SDLAudioDriver::ReleasePacedCredits(uint32_t new_credits) {
     releasable = std::min(releasable, uint64_t(pace_allowance_frames_));
   }
   if (releasable) {
-    auto ret = semaphore_->Release(int(releasable), nullptr);
-    assert_true(ret);
-    if (!ret) {
-      return 0;
-    }
+    ReleaseToGuest(uint32_t(releasable));
     pace_deferred_credits_ -= releasable;
     pace_allowance_frames_ -= double(releasable);
     if (pace_allowance_frames_ < 0.0) {
@@ -414,6 +429,43 @@ uint64_t SDLAudioDriver::ReleasePacedCredits(uint32_t new_credits) {
     }
   }
   return releasable;
+}
+
+void SDLAudioDriver::ReleaseToGuest(uint32_t credits) {
+  if (!smoother_thread_.joinable()) {
+    semaphore_->Release(int(credits), nullptr);
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(smoother_mutex_);
+    smoother_pending_ += credits;
+  }
+  smoother_cv_.notify_one();
+}
+
+void SDLAudioDriver::SmootherMain() {
+  const auto period =
+      std::chrono::nanoseconds(uint64_t(channel_samples_) * 1000000000ull / frame_frequency_);
+  auto next = std::chrono::steady_clock::now();
+  std::unique_lock<std::mutex> lock(smoother_mutex_);
+  while (true) {
+    smoother_cv_.wait(lock, [this] { return smoother_stopping_ || smoother_pending_; });
+    if (smoother_stopping_) {
+      return;
+    }
+    // Resynchronize after an idle stretch instead of replaying it as a burst.
+    next = std::max(next + period, std::chrono::steady_clock::now() - period);
+    if (smoother_cv_.wait_until(lock, next, [this] { return smoother_stopping_; })) {
+      return;
+    }
+    // Two at a time once behind (a device clock slightly faster than the
+    // host's), so the backlog can't grow.
+    const uint32_t count = std::min(smoother_pending_, smoother_pending_ > 4 ? 2u : 1u);
+    smoother_pending_ -= count;
+    lock.unlock();
+    semaphore_->Release(int(count), nullptr);
+    lock.lock();
+  }
 }
 
 }  // namespace rex::audio::sdl

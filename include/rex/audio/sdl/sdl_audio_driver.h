@@ -16,6 +16,7 @@
 #include <mutex>
 #include <queue>
 #include <stack>
+#include <thread>
 
 #include <rex/audio/audio_driver.h>
 #include <rex/thread.h>
@@ -46,6 +47,10 @@ class SDLAudioDriver : public AudioDriver {
   // number of credits actually released to the guest.
   uint64_t ReleasePacedCredits(uint32_t new_credits);
 
+  // Hands credits to the guest, through the smoother when it runs.
+  void ReleaseToGuest(uint32_t credits);
+  void SmootherMain();
+
   rex::thread::Semaphore* semaphore_ = nullptr;
 
   SDL_AudioStream* sdl_stream_ = nullptr;
@@ -71,6 +76,14 @@ class SDLAudioDriver : public AudioDriver {
   double pace_allowance_frames_ = 4.0;
   uint64_t pace_last_ns_ = 0;
   uint64_t pace_deferred_credits_ = 0;
+
+  // audio_smooth_credits: credits the device freed, handed to the guest one
+  // frame period apart by smoother_thread_ instead of all at once.
+  std::thread smoother_thread_;
+  std::mutex smoother_mutex_;
+  std::condition_variable smoother_cv_;
+  uint32_t smoother_pending_ = 0;
+  bool smoother_stopping_ = false;
 
   // audio_stats window counters - only touched on the SDL audio thread.
   uint64_t stats_window_start_ns_ = 0;
