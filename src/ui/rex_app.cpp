@@ -271,6 +271,9 @@ REXCVAR_DEFINE_BOOL(quit_dialog, false, "UI",
                     "chord (RB+Start by default), for games without a quit option of their own")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(input_require_window_focus, false, "Input",
+                    "Ignore controller input while the game window is not focused (the window "
+                    "focus state is unreliable under gamescope and on Android)");
 REXCVAR_DEFINE_BOOL(show_fps_counter, false, "UI", "Show the guest FPS counter overlay")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -589,13 +592,11 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
       // interactive overlay or the quit dialog takes it. Passive dialogs (FPS
       // counter, achievement toast) stay registered for the whole session, so
       // HasDialogs() alone would gate the game permanently.
-#if !REX_PLATFORM_ANDROID
-      // Android delivers no input to an app in the background, and the SDL
-      // window's focus state there doesn't track the activity reliably.
-      if (window_ && !window_->HasFocus()) {
+      // Opt-in: the SDL window's focus state isn't reliable everywhere (on
+      // the Steam Deck and on Android the title screen never took Start).
+      if (REXCVAR_GET(input_require_window_focus) && window_ && !window_->HasFocus()) {
         return false;
       }
-#endif
       if (quit_dialog_open_.load(std::memory_order_acquire)) {
         return false;
       }
