@@ -10,6 +10,10 @@
  */
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 #include <rex/assert.h>
 #include <rex/audio/audio_driver.h>
@@ -40,21 +44,80 @@ REXCVAR_DEFINE_INT32(audio_worker_thread_priority, 1, "Audio",
                      "emulation threads to avoid underrun crackle.")
     .range(-2, 2);
 
+REXCVAR_DEFINE_BOOL(audio_worker_stats, false, "Audio",
+                    "Log every 5 seconds how the audio worker spent its time: waiting for the "
+                    "driver, in the guest's audio callback, and how many callbacks ran")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(audio_silent_realtime, false, "Audio",
+                    "When no audio device opens, still consume the guest's audio frames at "
+                    "real-time rate instead of as fast as they come (closer to a machine with "
+                    "sound, for testing)");
+
 namespace {
 
 class SilentAudioDriver final : public rex::audio::AudioDriver {
  public:
   SilentAudioDriver(rex::memory::Memory* memory, rex::thread::Semaphore* semaphore)
-      : AudioDriver(memory), semaphore_(semaphore) {}
+      : AudioDriver(memory), semaphore_(semaphore) {
+    if (semaphore_ && REXCVAR_GET(audio_silent_realtime)) {
+      pacer_ = std::thread([this] { PacerMain(); });
+    }
+  }
+
+  ~SilentAudioDriver() override {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stopping_ = true;
+    }
+    cv_.notify_one();
+    if (pacer_.joinable()) {
+      pacer_.join();
+    }
+  }
 
   void SubmitFrame(uint32_t /*samples_ptr*/) override {
-    if (semaphore_) {
+    if (!semaphore_) {
+      return;
+    }
+    if (!pacer_.joinable()) {
+      semaphore_->Release(1, nullptr);
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      submitted_++;
+    }
+    cv_.notify_one();
+  }
+
+ private:
+  // Consumes the submitted frames at the rate a device plays them (256
+  // samples at 48 kHz), so the guest's audio clock runs as with real output.
+  void PacerMain() {
+    constexpr auto kFramePeriod = std::chrono::microseconds(256 * 1000000 / 48000);
+    auto next = std::chrono::steady_clock::now();
+    std::unique_lock<std::mutex> lock(mutex_);
+    while (true) {
+      cv_.wait(lock, [this] { return stopping_ || submitted_; });
+      if (stopping_) {
+        return;
+      }
+      next = std::max(next + kFramePeriod, std::chrono::steady_clock::now());
+      if (cv_.wait_until(lock, next, [this] { return stopping_; })) {
+        return;
+      }
+      submitted_--;
       semaphore_->Release(1, nullptr);
     }
   }
 
- private:
   rex::thread::Semaphore* semaphore_;
+  std::thread pacer_;
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  uint32_t submitted_ = 0;
+  bool stopping_ = false;
 };
 
 int32_t AudioWorkerNativePriority() {
@@ -152,12 +215,37 @@ void AudioSystem::WorkerThreadMain() {
 
   // Main run loop.
   uint32_t diag_pump_count = 0;
+  using StatsClock = std::chrono::steady_clock;
+  auto stats_start = StatsClock::now();
+  StatsClock::duration stats_wait{}, stats_callback{}, stats_callback_max{};
+  uint32_t stats_waits = 0, stats_callbacks = 0;
   while (worker_running_) {
+    const bool stats_enabled = REXCVAR_GET(audio_worker_stats);
+    if (stats_enabled && StatsClock::now() - stats_start >= std::chrono::seconds(5)) {
+      using Ms = std::chrono::duration<double, std::milli>;
+      const double window_ms = Ms(StatsClock::now() - stats_start).count();
+      REXAPU_INFO(
+          "Audio worker ({:.1f}s): waits={} waiting={:.0f}% callbacks={} ({:.1f}/s) "
+          "in_callback={:.0f}% callback_avg={:.3f}ms max={:.3f}ms",
+          window_ms / 1000.0, stats_waits, 100.0 * Ms(stats_wait).count() / window_ms,
+          stats_callbacks, stats_callbacks * 1000.0 / window_ms,
+          100.0 * Ms(stats_callback).count() / window_ms,
+          stats_callbacks ? Ms(stats_callback).count() / stats_callbacks : 0.0,
+          Ms(stats_callback_max).count());
+      stats_start = StatsClock::now();
+      stats_wait = stats_callback = stats_callback_max = {};
+      stats_waits = stats_callbacks = 0;
+    }
+    const auto wait_start = StatsClock::now();
     // These handles signify the number of submitted samples. Once we reach
     // 64 samples, we wait until our audio backend releases a semaphore
     // (signaling a sample has finished playing)
     auto result = rex::thread::WaitAny(wait_handles_, rex::countof(wait_handles_), true,
                                        std::chrono::milliseconds(500));
+    if (stats_enabled) {
+      stats_wait += StatsClock::now() - wait_start;
+      stats_waits++;
+    }
     if (result.first == rex::thread::WaitResult::kFailed) {
       REXAPU_WARN("AudioWorker: WaitAny failed");
       continue;
@@ -196,8 +284,15 @@ void AudioSystem::WorkerThreadMain() {
         }
         SCOPE_profile_cpu_i("apu", "rex::audio::AudioSystem->client_callback");
         uint64_t args[] = {client_callback_arg};
+        const auto callback_start = StatsClock::now();
         function_dispatcher_->Execute(worker_thread_->thread_state(), client_callback, args,
                                       rex::countof(args));
+        if (stats_enabled) {
+          const auto callback_time = StatsClock::now() - callback_start;
+          stats_callback += callback_time;
+          stats_callback_max = std::max(stats_callback_max, callback_time);
+          stats_callbacks++;
+        }
         // Guest execution can return with host FP exceptions unmasked (the
         // FPSCR emulation leaks MXCSR state); the first host float op on this
         // thread then traps (seen as STATUS_FLOAT_INEXACT_RESULT in the gap
