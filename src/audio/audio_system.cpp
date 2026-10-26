@@ -11,6 +11,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <string>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -53,6 +55,11 @@ REXCVAR_DEFINE_BOOL(audio_silent_realtime, false, "Audio",
                     "When no audio device opens, still consume the guest's audio frames at "
                     "real-time rate instead of as fast as they come (closer to a machine with "
                     "sound, for testing)");
+
+REXCVAR_DEFINE_STRING(audio_dump_path, "", "Audio",
+                      "Append every audio frame the guest submits to this file, as raw 5.1 "
+                      "(256 big-endian floats per channel, channels in sequence), to inspect "
+                      "the guest's own mix for clicks or clipping (empty = off)");
 
 namespace {
 
@@ -434,6 +441,14 @@ void AudioSystem::SubmitFrame(size_t index, uint32_t samples_ptr) {
   auto global_lock = global_critical_region_.Acquire();
   assert_true(index < kMaximumClientCount);
   assert_true(clients_[index].driver != NULL);
+
+  const std::string dump_path = REXCVAR_GET(audio_dump_path);
+  if (!dump_path.empty()) {
+    static FILE* dump_file = std::fopen(dump_path.c_str(), "ab");
+    if (dump_file) {
+      std::fwrite(memory()->TranslateVirtual(samples_ptr), sizeof(float), 256 * 6, dump_file);
+    }
+  }
 
   (clients_[index].driver)->SubmitFrame(samples_ptr);
 }
