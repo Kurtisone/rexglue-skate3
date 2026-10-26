@@ -49,6 +49,11 @@ REXCVAR_DEFINE_INT32(audio_device_sample_frames, 0, "Audio",
                      "hiccups better - try this against crackling, especially on Linux.")
     .range(0, 8192);
 
+REXCVAR_DEFINE_BOOL(audio_force_stereo, false, "Audio",
+                    "Open the audio device in stereo and fold the guest's 5.1 mix ourselves, even "
+                    "when the device reports more channels. For stereo speakers exposed as a "
+                    "surround sink (the Steam Deck's), whose system downmix can clip.");
+
 namespace {
 
 uint64_t AudioNowNs() {
@@ -114,7 +119,7 @@ bool SDLAudioDriver::Initialize() {
 
   // A 1-channel device gets the stereo fold too, then SDL collapses to mono.
   // Handing it a 6ch stream instead would use SDL's own downmix.
-  if (obtained_spec.channels <= 2) {
+  if (obtained_spec.channels <= 2 || REXCVAR_GET(audio_force_stereo)) {
     SDL_DestroyAudioStream(sdl_stream_);
     sdl_stream_ = nullptr;
     desired_spec.channels = 2;
