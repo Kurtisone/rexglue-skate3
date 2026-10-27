@@ -870,6 +870,12 @@ bool TextureCache::DebugFindTeamProfileBackgroundBinding(uint32_t used_texture_m
 void TextureCache::DebugLogTeamProfileBackgroundTextureCandidate(const char* action,
                                                                  uint32_t fetch_index,
                                                                  const Texture& texture) {
+  // Called for every texture bind and lookup: bail out on the (default) zero
+  // budgets before examining the key.
+  if (REXCVAR_GET(vulkan_debug_log_team_profile_background_bindings_remaining) <= 0 &&
+      REXCVAR_GET(vulkan_debug_log_team_profile_background_candidates_remaining) <= 0) {
+    return;
+  }
   const TextureKey& key = texture.key();
   if (!DebugIsTeamProfileBackgroundCandidateKey(key)) {
     return;
