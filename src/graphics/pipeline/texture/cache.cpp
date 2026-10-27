@@ -333,6 +333,7 @@ void TextureCache::CompletedSubmissionUpdated(uint64_t completed_submission_inde
     }
   }
   if (destroyed_any) {
+    ClearRecentTextures();
     COUNT_profile_set("gpu/texture_cache/textures", textures_.size());
   }
 }
@@ -1295,11 +1296,51 @@ void TextureCache::WatchCallback(const std::unique_lock<std::recursive_mutex>& g
 
 void TextureCache::DestroyAllTextures(bool from_destructor) {
   ResetTextureBindings(from_destructor);
+  ClearRecentTextures();
   textures_.clear();
   COUNT_profile_set("gpu/texture_cache/textures", 0);
 }
 
+uint32_t TextureCache::RecentTextureIndex(const TextureKey& key) {
+  static_assert(sizeof(TextureKey) % sizeof(uint32_t) == 0);
+  uint32_t words[sizeof(TextureKey) / sizeof(uint32_t)];
+  std::memcpy(words, &key, sizeof(key));
+  uint32_t hash = 0;
+  for (uint32_t word : words) {
+    hash = (hash ^ word) * UINT32_C(0x9E3779B1);
+  }
+  return hash >> (32 - kRecentTextureCountLog2);
+}
+
+void TextureCache::ClearRecentTextures() {
+  if (!recent_textures_) {
+    return;
+  }
+  for (size_t i = 0; i < (size_t(1) << kRecentTextureCountLog2); ++i) {
+    recent_textures_[i] = RecentTexture();
+  }
+}
+
 TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
+  RecentTexture* recent = nullptr;
+  const TextureKey requested_key = key;
+  if (!IsDrawResolutionScaled()) {
+    if (!recent_textures_) {
+      recent_textures_ = std::make_unique<RecentTexture[]>(size_t(1) << kRecentTextureCountLog2);
+    }
+    recent = &recent_textures_[RecentTextureIndex(key)];
+    if (recent->texture && recent->key == key) {
+      return recent->texture;
+    }
+  }
+  auto remember = [recent, &requested_key](Texture* texture) {
+    if (recent) {
+      recent->key = requested_key;
+      recent->texture = texture;
+    }
+    return texture;
+  };
+
   // Check if the texture is a scaled resolve texture.
   if (IsDrawResolutionScaled() && key.tiled && IsScaledResolveSupportedForFormat(key)) {
     texture_util::TextureGuestLayout scaled_resolve_guest_layout = key.GetGuestLayout();
@@ -1401,7 +1442,7 @@ TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
   if (found_texture_it != textures_.end()) {
     DebugLogTeamProfileBackgroundTextureCandidate("reuse", UINT32_MAX,
                                                   *found_texture_it->second);
-    return found_texture_it->second.get();
+    return remember(found_texture_it->second.get());
   }
 
   // Create the texture and add it to the map.
@@ -1418,7 +1459,7 @@ TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
   COUNT_profile_set("gpu/texture_cache/textures", textures_.size());
   texture->LogAction("Created");
   DebugLogTeamProfileBackgroundTextureCandidate("create", UINT32_MAX, *texture);
-  return texture;
+  return remember(texture);
 }
 
 bool TextureCache::LoadTextureData(Texture& texture) {

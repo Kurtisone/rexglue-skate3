@@ -660,6 +660,21 @@ class TextureCache {
 
   std::unordered_map<TextureKey, std::unique_ptr<Texture>, TextureKey::Hasher> textures_;
 
+  // Direct-mapped cache of recent FindOrCreateTexture results in front of
+  // textures_, keyed by the requested key: titles switch textures on nearly
+  // every draw, and the hashed map lookup was a notable part of the GPU
+  // thread's time. Only used without resolution scaling (where the requested
+  // key maps to the same texture as long as it exists); cleared whenever a
+  // texture is destroyed.
+  struct RecentTexture {
+    TextureKey key;
+    Texture* texture = nullptr;
+  };
+  static constexpr uint32_t kRecentTextureCountLog2 = 10;
+  std::unique_ptr<RecentTexture[]> recent_textures_;
+  static uint32_t RecentTextureIndex(const TextureKey& key);
+  void ClearRecentTextures();
+
   uint64_t textures_total_host_memory_usage_ = 0;
 
   Texture* texture_used_first_ = nullptr;
