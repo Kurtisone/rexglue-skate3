@@ -14,6 +14,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
+
 #include <rex/assert.h>
 #include <rex/cvar.h>
 #include <rex/graphics/vulkan/command_processor.h>
@@ -33,6 +37,35 @@ REXCVAR_DEFINE_BOOL(vulkan_hoist_shared_memory_uploads, false, "GPU/Vulkan",
                     "are costly on tiled mobile GPUs)");
 
 namespace rex::graphics::vulkan {
+
+namespace {
+
+// Copies guest pages into an upload buffer. Upload buffers are in uncached
+// (write-combined) host memory: streaming stores fill it without first reading
+// the destination lines, which plain memcpy of page-sized blocks does not do.
+void CopyPagesToUploadBuffer(void* dest, const void* source, size_t size) {
+#if defined(__AVX2__)
+  if (!((reinterpret_cast<uintptr_t>(dest) | reinterpret_cast<uintptr_t>(source) | size) & 127)) {
+    auto* dest_vector = reinterpret_cast<__m256i*>(dest);
+    const auto* source_vector = reinterpret_cast<const __m256i*>(source);
+    for (size_t i = 0; i < size / sizeof(__m256i); i += 4) {
+      __m256i a = _mm256_load_si256(source_vector + i);
+      __m256i b = _mm256_load_si256(source_vector + i + 1);
+      __m256i c = _mm256_load_si256(source_vector + i + 2);
+      __m256i d = _mm256_load_si256(source_vector + i + 3);
+      _mm256_stream_si256(dest_vector + i, a);
+      _mm256_stream_si256(dest_vector + i + 1, b);
+      _mm256_stream_si256(dest_vector + i + 2, c);
+      _mm256_stream_si256(dest_vector + i + 3, d);
+    }
+    _mm_sfence();
+    return;
+  }
+#endif
+  std::memcpy(dest, source, size);
+}
+
+}  // namespace
 
 VulkanSharedMemory::VulkanSharedMemory(VulkanCommandProcessor& command_processor,
                                        memory::Memory& memory,
@@ -357,9 +390,9 @@ bool VulkanSharedMemory::UploadRangesBeforeRenderPass(
         break;
       }
       MakeRangeValid(upload_range_start << page_size_log2(), uint32_t(upload_buffer_size), false);
-      std::memcpy(upload_buffer_mapping,
-                  memory().TranslatePhysical(upload_range_start << page_size_log2()),
-                  upload_buffer_size);
+      CopyPagesToUploadBuffer(upload_buffer_mapping,
+                              memory().TranslatePhysical(upload_range_start << page_size_log2()),
+                              upload_buffer_size);
       if (upload_buffer_previous != upload_buffer && !upload_regions_.empty()) {
         command_buffer.CmdVkCopyBuffer(upload_buffer_previous, buffer_,
                                        uint32_t(upload_regions_.size()), upload_regions_.data());
@@ -440,9 +473,9 @@ bool VulkanSharedMemory::UploadRanges(
         break;
       }
       MakeRangeValid(upload_range_start << page_size_log2(), uint32_t(upload_buffer_size), false);
-      std::memcpy(upload_buffer_mapping,
-                  memory().TranslatePhysical(upload_range_start << page_size_log2()),
-                  upload_buffer_size);
+      CopyPagesToUploadBuffer(upload_buffer_mapping,
+                              memory().TranslatePhysical(upload_range_start << page_size_log2()),
+                              upload_buffer_size);
       if (upload_buffer_previous != upload_buffer && !upload_regions_.empty()) {
         assert_true(upload_buffer_previous != VK_NULL_HANDLE);
         command_buffer.CmdVkCopyBuffer(upload_buffer_previous, buffer_,
