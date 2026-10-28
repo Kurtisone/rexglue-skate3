@@ -252,8 +252,13 @@ ReadbackResolveMode CommandProcessor::GetReadbackResolveMode(
 }
 
 bool CommandProcessor::IsReadbackMemexportEnabled(bool legacy_backend_flag) const {
-  if (legacy_readback_memexport_cvar_name_ &&
-      rex::cvar::HasNonDefaultValue(legacy_readback_memexport_cvar_name_)) {
+  if (!legacy_readback_memexport_override_checked_) {
+    legacy_readback_memexport_override_checked_ = true;
+    legacy_readback_memexport_overridden_ =
+        legacy_readback_memexport_cvar_name_ &&
+        rex::cvar::HasNonDefaultValue(legacy_readback_memexport_cvar_name_);
+  }
+  if (legacy_readback_memexport_overridden_) {
     return legacy_backend_flag;
   }
   return REXCVAR_GET(readback_memexport);
@@ -1037,6 +1042,7 @@ bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, ui
   }
 #endif
   rex::perf::Profiler::Flip();
+  legacy_readback_memexport_override_checked_ = false;
 
   // Xenia-specific VdSwap hook.
   // VdSwap will post this to tell us we need to swap the screen/fire an

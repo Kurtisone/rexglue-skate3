@@ -279,6 +279,10 @@ class CommandProcessor {
   // Set by backend command processors to their legacy memexport readback cvar
   // name (for explicit-override compatibility).
   const char* legacy_readback_memexport_cvar_name_ = nullptr;
+  // Whether the legacy backend cvar above is set, refreshed once per frame
+  // (looking a cvar up by name is too slow for every draw).
+  mutable bool legacy_readback_memexport_overridden_ = false;
+  mutable bool legacy_readback_memexport_override_checked_ = false;
 
  private:
   // CPU-side frame attribution for the GPU emulation thread (gpu_cpu_profile
