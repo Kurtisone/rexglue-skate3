@@ -36,6 +36,11 @@ REXCVAR_DEFINE_BOOL(vulkan_hoist_shared_memory_uploads, false, "GPU/Vulkan",
                     "ending it, when no draw of the pass used those pages (render pass breaks "
                     "are costly on tiled mobile GPUs)");
 
+REXCVAR_DEFINE_BOOL(vulkan_upload_streaming_stores, true, "GPU/Vulkan",
+                    "Copy guest memory into upload buffers with streaming (non-temporal) "
+                    "stores when built for AVX2")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 namespace rex::graphics::vulkan {
 
 namespace {
@@ -45,7 +50,8 @@ namespace {
 // the destination lines, which plain memcpy of page-sized blocks does not do.
 void CopyPagesToUploadBuffer(void* dest, const void* source, size_t size) {
 #if defined(__AVX2__)
-  if (!((reinterpret_cast<uintptr_t>(dest) | reinterpret_cast<uintptr_t>(source) | size) & 127)) {
+  if (REXCVAR_GET(vulkan_upload_streaming_stores) &&
+      !((reinterpret_cast<uintptr_t>(dest) | reinterpret_cast<uintptr_t>(source) | size) & 127)) {
     auto* dest_vector = reinterpret_cast<__m256i*>(dest);
     const auto* source_vector = reinterpret_cast<const __m256i*>(source);
     for (size_t i = 0; i < size / sizeof(__m256i); i += 4) {
