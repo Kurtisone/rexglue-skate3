@@ -447,6 +447,22 @@ class VulkanTextureCache final : public TextureCache {
 
   xenos::AnisoFilter max_anisotropy_;
 
+  // GetSamplerParameters depends only on the fetch constant, the binding's
+  // filter overrides and anisotropic_override, but derives the texture key and
+  // mip range to get there - for every sampler of every draw. Recent results,
+  // direct-mapped by a hash of those inputs.
+  struct SamplerParametersCacheEntry {
+    uint32_t fetch[6];
+    uint32_t filters;  // mag, min, mip, aniso; bit 31 = valid.
+    int32_t anisotropic_override;
+    SamplerParameters parameters;
+  };
+  static constexpr uint32_t kSamplerParametersCacheSizeLog2 = 8;
+  mutable std::array<SamplerParametersCacheEntry, size_t(1) << kSamplerParametersCacheSizeLog2>
+      sampler_parameters_cache_{};
+  SamplerParameters ComputeSamplerParameters(const VulkanShader::SamplerBinding& binding,
+                                             const xenos::xe_gpu_texture_fetch_t& fetch) const;
+
   std::unordered_map<SamplerParameters, Sampler, SamplerParameters::Hasher> samplers_;
   std::pair<const SamplerParameters, Sampler>* sampler_used_first_ = nullptr;
   std::pair<const SamplerParameters, Sampler>* sampler_used_last_ = nullptr;
