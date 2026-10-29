@@ -37,6 +37,10 @@
 #include <rex/system/user_module.h>
 
 REXCVAR_DEFINE_BOOL(vsync, false, "GPU", "Enable vertical sync");
+REXCVAR_DEFINE_BOOL(gpu_skip_guest_draws, false, "GPU",
+                    "Process the guest's command buffers (registers, fences, interrupts, swaps) "
+                    "but execute none of its draws and copies, for a title that renders "
+                    "natively instead");
 
 REXCVAR_DEFINE_BOOL(clear_memory_page_state, false, "GPU",
                     "Refresh page-valid state from GPU-written memory at frame end. "
@@ -1562,7 +1566,7 @@ bool CommandProcessor::ExecutePacketType3Draw(memory::RingBuffer* reader, uint32
   // we don't support yet.
   reader->AdvanceRead(count_remaining * sizeof(uint32_t));
 
-  if (draw_succeeded) {
+  if (draw_succeeded && !REXCVAR_GET(gpu_skip_guest_draws)) {
     auto viz_query = register_file_->Get<reg::PA_SC_VIZ_QUERY>();
     if (!(viz_query.viz_query_ena && viz_query.kill_pix_post_hi_z)) {
       // TODO(Triang3l): Don't drop the draw call completely if the vertex
