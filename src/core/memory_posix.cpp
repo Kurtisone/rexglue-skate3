@@ -48,6 +48,35 @@
 
 #if REX_PLATFORM_LINUX && !REX_PLATFORM_ANDROID
 #include <linux/fs.h>  // PROCMAP_QUERY (Linux 6.11+)
+#ifndef PROCMAP_QUERY
+// Older kernel headers (the Steam Deck build container): the ABI is stable and
+// the kernel answers ENOTTY when it lacks the ioctl, so what decides is the
+// running kernel, not the one built against.
+#define PROCMAP_QUERY _IOWR('f', 17, struct procmap_query)
+enum {
+  PROCMAP_QUERY_VMA_READABLE = 0x01,
+  PROCMAP_QUERY_VMA_WRITABLE = 0x02,
+  PROCMAP_QUERY_VMA_EXECUTABLE = 0x04,
+  PROCMAP_QUERY_VMA_SHARED = 0x08,
+};
+struct procmap_query {
+  uint64_t size;
+  uint64_t query_flags;
+  uint64_t query_addr;
+  uint64_t vma_start;
+  uint64_t vma_end;
+  uint64_t vma_flags;
+  uint64_t vma_page_size;
+  uint64_t vma_offset;
+  uint64_t inode;
+  uint32_t dev_major;
+  uint32_t dev_minor;
+  uint32_t vma_name_size;
+  uint32_t build_id_size;
+  uint64_t vma_name_addr;
+  uint64_t build_id_addr;
+};
+#endif
 #include <sys/ioctl.h>
 #endif
 
