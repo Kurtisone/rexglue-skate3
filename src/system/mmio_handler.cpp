@@ -406,13 +406,17 @@ bool MMIOHandler::ExceptionCallback(arch::Exception* ex) {
     // clears the watch we just hit).
     // Do this under the lock so we don't introduce another race condition.
     auto lock = global_critical_region_.Acquire();
-    memory::PageAccess cur_access;
-    size_t page_length = memory::page_size();
-    memory::QueryProtect(fault_host_address, page_length, cur_access);
-    if (cur_access != memory::PageAccess::kNoAccess &&
-        (!is_write || cur_access != memory::PageAccess::kReadOnly)) {
-      // Another thread has cleared this watch. Abort.
-      return true;
+    // Writes skip this: the host lookup can mean parsing /proc/self/maps on
+    // each write watch fault, and the violation callback handles a cleared
+    // watch from the heap's own state.
+    if (!is_write) {
+      memory::PageAccess cur_access;
+      size_t page_length = memory::page_size();
+      memory::QueryProtect(fault_host_address, page_length, cur_access);
+      if (cur_access != memory::PageAccess::kNoAccess) {
+        // Another thread has cleared this watch. Abort.
+        return true;
+      }
     }
     // The address is not found within any range, so either a write watch or an
     // actual access violation.

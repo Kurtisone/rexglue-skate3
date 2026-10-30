@@ -627,7 +627,8 @@ bool Memory::AccessViolationCallback(std::unique_lock<std::recursive_mutex> glob
           reinterpret_cast<uintptr_t>(host_address) & ~(uintptr_t(host_page_size - 1));
       if (rex::memory::Protect(reinterpret_cast<void*>(page_base), host_page_size,
                                rex::memory::PageAccess::kReadWrite, nullptr)) {
-        REXSYS_WARN(
+        // Also reached when another thread has just cleared the same watch.
+        REXSYS_DEBUG(
             "Recovered stale physical page protection for guest {:08X} (host {:016X}, "
             "guest_protect {:08X})",
             virtual_address, static_cast<uint64_t>(page_base), guest_protect);
