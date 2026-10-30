@@ -1128,6 +1128,15 @@ void XmaContext::DecodeOldFrame(XMA_CONTEXT_DATA* data) {
     stream.SetOffset(data->input_buffer_read_offset);
 
     if (data->input_buffer_read_offset > current_input_size * 8) {
+      // A stream's next frame can start right after the next packet's header,
+      // when the packet's frame count did not say it was the last one: that
+      // packet is in the other buffer, and it may begin with the end of a
+      // split frame, so read from its first frame like the end of a packet does.
+      if (is_streaming) {
+        SwapInputBuffer(data);
+        data->input_buffer_read_offset = GetPacketFirstFrameOffsetOld(data);
+        return;
+      }
       REXAPU_ERROR("XmaContext {} old: input offset {} exceeds buffer size {}", id(),
                    uint32_t(data->input_buffer_read_offset), current_input_size * 8);
       SwapInputBuffer(data);
