@@ -26,6 +26,9 @@ namespace vulkan {
 // Adreno driver through adrenotools on Android) instead of the system loader.
 // Call before creating the instance; the handle stays open for the process.
 void SetLoaderLibraryOverride(void* dlopen_handle);
+// The handle given to SetLoaderLibraryOverride, or null for the system loader,
+// for other Vulkan users in the process that must load the same driver.
+void* GetLoaderLibraryOverride();
 
 class VulkanInstance {
  public:

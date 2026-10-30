@@ -42,6 +42,7 @@ void* g_loader_library_override = nullptr;
 }  // namespace
 
 void SetLoaderLibraryOverride(void* dlopen_handle) { g_loader_library_override = dlopen_handle; }
+void* GetLoaderLibraryOverride() { return g_loader_library_override; }
 
 std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
                                                        const bool try_enable_validation) {
