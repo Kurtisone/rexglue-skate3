@@ -169,7 +169,12 @@ u32 NtCreateFile_entry(mapped_u32 handle_out, u32 desired_access,
 
   *handle_out = handle;
   if (XFAILED(result)) {
-    REXKRNL_IMPORT_FAIL("NtCreateFile", "path='{}' -> {:#x}", target_path, result);
+    // Games probe loose files before their archives: not finding one is routine.
+    if (result == X_STATUS_NO_SUCH_FILE) {
+      REXKRNL_DEBUG("[NtCreateFile] not found: path='{}'", target_path);
+    } else {
+      REXKRNL_IMPORT_FAIL("NtCreateFile", "path='{}' -> {:#x}", target_path, result);
+    }
   } else {
     REXKRNL_IMPORT_RESULT("NtCreateFile", "{:#x} handle={:#x}", result, handle);
   }
